@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>AI Todo</title>
+
+<!-- ホーム画面に追加してアプリのように使うための設定 -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#16181d">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<!-- iOSの旧バージョン向け。新しいiOSは manifest の display を見る -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="AI Todo">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+
+    <!-- 同期・更新状態（要件5.4） -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <button id="btn-back" class="linkbtn hidden" type="button">← 戻る</button>
+        <h1 id="page-title">今やること</h1>
+      </div>
+      <div class="topbar-right">
+        <p id="sync-state" class="sync-state" role="status" aria-live="polite"></p>
+        <button id="btn-connect" class="ghost hidden" type="button">Googleに接続</button>
+        <button id="btn-disconnect" class="linkbtn hidden" type="button">切断</button>
+        <button id="btn-sync" class="primary" type="button">更新</button>
+      </div>
+    </header>
+
+    <p id="notice" class="notice hidden" role="alert"></p>
+
+    <main>
+      <!-- ============ メイン画面（要件5.1） ============ -->
+      <section id="view-list" class="screen active">
+
+        <!-- 絞り込み（要件4.5） -->
+        <div class="filters" role="group" aria-label="絞り込み">
+          <div class="filter-group">
+            <span class="filter-label">優先順位</span>
+            <div id="filter-priority" class="filter-set"></div>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label">重さ</span>
+            <div id="filter-weight" class="filter-set"></div>
+          </div>
+          <div class="filter-group">
+            <span class="filter-label">条件</span>
+            <div class="filter-set">
+              <button class="filter" type="button" data-flag="hasDeadline">期限あり</button>
+              <button class="filter" type="button" data-flag="urgentOnly">緊急</button>
+              <button class="filter" type="button" data-flag="aiUnconfirmedOnly">AI未確認</button>
+            </div>
+          </div>
+          <button id="btn-clear-filters" class="linkbtn" type="button">絞り込みを外す</button>
+        </div>
+
+        <div id="task-list" class="task-list"></div>
+
+        <!-- AI提案は確定タスクと別枠（要件4.3 / 4.4） -->
+        <section id="proposals" class="proposals hidden">
+          <h2 class="section-title">AIからの提案</h2>
+          <p class="section-note">まだ確定していない候補です。採用するとタスク一覧に入ります。</p>
+          <div id="proposal-list" class="task-list proposal-mode"></div>
+        </section>
+
+        <p class="list-footer">
+          <button id="btn-open-archive" class="linkbtn" type="button">完了・アーカイブを見る</button>
+        </p>
+      </section>
+
+      <!-- ============ タスク詳細・編集（要件5.2） ============ -->
+      <section id="view-detail" class="screen">
+        <form id="task-form" class="task-form">
+          <label class="field">
+            <span class="field-label">タスク名</span>
+            <input type="text" id="f-title" required placeholder="例：面談ログから活動ノートを更新する">
+          </label>
+
+          <label class="field">
+            <span class="field-label">説明・メモ</span>
+            <textarea id="f-description" rows="3"></textarea>
+          </label>
+
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">優先順位</span>
+              <select id="f-priority"></select>
+            </label>
+            <label class="field">
+              <span class="field-label">重さ</span>
+              <select id="f-weight"></select>
+            </label>
+          </div>
+
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">期限</span>
+              <input type="datetime-local" id="f-deadline">
+            </label>
+            <label class="field">
+              <span class="field-label">緊急度</span>
+              <select id="f-urgency"></select>
+            </label>
+          </div>
+
+          <div id="ai-info" class="ai-info hidden"></div>
+          <div id="source-info" class="source-info"></div>
+
+          <div class="form-actions">
+            <button type="submit" class="primary">保存</button>
+            <button type="button" id="btn-cancel" class="ghost">キャンセル</button>
+          </div>
+          <div class="form-actions secondary-actions">
+            <button type="button" id="btn-complete" class="ghost">完了にする</button>
+            <button type="button" id="btn-archive" class="ghost danger">アーカイブ</button>
+            <button type="button" id="btn-reopen" class="ghost hidden">未完了に戻す</button>
+          </div>
+          <p id="form-errors" class="form-errors hidden" role="alert"></p>
+        </form>
+      </section>
+
+      <!-- ============ 完了・アーカイブ（要件5.3） ============ -->
+      <section id="view-archive" class="screen">
+        <h2 class="section-title">完了</h2>
+        <div id="done-list" class="task-list compact"></div>
+        <h2 class="section-title">アーカイブ</h2>
+        <div id="archived-list" class="task-list compact"></div>
+      </section>
+    </main>
+
+    <button id="btn-add" class="add-btn" type="button">タスクを追加</button>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/model.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/sheets.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
