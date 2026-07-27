@@ -264,6 +264,43 @@ test("行更新: アプリが知らない列を消さない", () => {
   assert.strictEqual(merged[header.length - 1], "消えたら困る値", "知らない列は温存する");
 });
 
+test("行更新: 空欄を既定値で埋め戻さない（AI未推定の情報を消さない）", () => {
+  // GASは AI仮説 の列を空にして aiEstimatedFields に列名を入れる。
+  // アプリが既定値（medium など）で埋め戻すと、その区別が失われる。
+  const header = arr(headerRow(APP_CONFIG));
+  const index = buildColumnIndex(header, APP_CONFIG);
+  const raw = new Array(header.length).fill("");
+  raw[index.id] = "t1";
+  raw[index.title] = "AI仮説を含むタスク";
+  raw[index.status] = "未着手";
+  raw[index.aiEstimatedFields] = '["priority","effort"]';
+
+  const task = rowToTask(raw, index, APP_CONFIG);
+  assert.strictEqual(task.priority, "medium", "画面表示のためにモデル側は既定値で埋める");
+
+  const merged = arr(mergeRow(task, index, APP_CONFIG));
+  assert.strictEqual(merged[index.priority], "", "空欄のまま書き戻す");
+  assert.strictEqual(merged[index.effort], "", "空欄のまま書き戻す");
+  assert.strictEqual(merged[index.title], "AI仮説を含むタスク");
+});
+
+test("行更新: 本人が入れた値は空欄に戻さない", () => {
+  const header = arr(headerRow(APP_CONFIG));
+  const index = buildColumnIndex(header, APP_CONFIG);
+  const raw = new Array(header.length).fill("");
+  raw[index.id] = "t1";
+  raw[index.title] = "A";
+  raw[index.status] = "未着手";
+
+  const task = rowToTask(raw, index, APP_CONFIG);
+  const edited = applyEdit(task, { priority: "high" });
+  edited._blank = task._blank;
+  edited._raw = task._raw;
+
+  const merged = arr(mergeRow(edited, index, APP_CONFIG));
+  assert.strictEqual(merged[index.priority], "high", "本人が変えた値は書き込む");
+});
+
 test("行更新: createdAt は書き換えない", () => {
   const header = arr(headerRow(APP_CONFIG));
   const index = buildColumnIndex(header, APP_CONFIG);

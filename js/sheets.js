@@ -148,7 +148,25 @@ function rowToTask(row, columnIndex, config = APP_CONFIG) {
   // 保存を行単位で行うために、由来の行をそのまま覚えておく。
   // これがあると、アプリが知らない列を消さずに書き戻せる。
   Object.defineProperty(task, "_raw", { value: row.slice(), enumerable: false, writable: true });
+
+  // 空欄だった列を覚えておく。
+  // シート側の空欄は「未設定」ではなく「AIがまだ推定していない」を表すことがある
+  // （GASは AI仮説 の列を空にして aiEstimatedFields に列名を入れる）。
+  // makeTask が既定値で埋めた値をそのまま書き戻すと、その区別が消える。
+  const blanks = new Set();
+  SHEET_FIELDS.forEach((field) => {
+    const at = columnIndex[field];
+    if (at != null && String(row[at] == null ? "" : row[at]).trim() === "") blanks.add(field);
+  });
+  Object.defineProperty(task, "_blank", { value: blanks, enumerable: false, writable: true });
   return task;
+}
+
+// makeTask が入れる既定値。書き戻しの判定に使う。
+let DEFAULTS = null;
+function defaultsOf() {
+  if (!DEFAULTS) DEFAULTS = makeTask({ title: "x" });
+  return DEFAULTS;
 }
 
 function rowToProject(row, columnIndex, config = APP_CONFIG) {
@@ -224,11 +242,23 @@ function mergeRow(task, columnIndex, config = APP_CONFIG) {
   const row = new Array(width).fill("");
   (task._raw || []).forEach((v, i) => { row[i] = v == null ? "" : v; });
 
+  const blanks = task._blank || new Set();
+  const defaults = defaultsOf();
+  const untouched = new Set(task.confirmedFields || []);
+
   SHEET_FIELDS.forEach((field) => {
     const at = columnIndex[field];
     if (at == null) return;
     if (NEVER_OVERWRITE.has(field)) return;
     const value = task[field];
+
+    // もとが空欄で、本人も触っていない（＝makeTaskの既定値のまま）なら空欄で戻す。
+    // 既定値を書き込むと「AIがまだ推定していない」という情報が消えるため。
+    if (blanks.has(field) && !untouched.has(field) && value === defaults[field]) {
+      row[at] = "";
+      return;
+    }
+
     if (ARRAY_FIELDS.has(field)) row[at] = encodeArray(value, config);
     else if (BOOLEAN_FIELDS.has(field)) row[at] = value ? "TRUE" : "FALSE";
     else row[at] = value == null ? "" : String(value);

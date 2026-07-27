@@ -260,12 +260,27 @@ function groupByDeadline(tasks, now = new Date()) {
 
 // ---- 分類フォルダ（Obsidianのフォルダ構造の再現） ----
 
-// Projectsの `category` は深さがまちまち（"A-就活" / "趣味/新規事業立案/営業支援AI"）。
-// 先頭の区切りまでを分類フォルダとして扱い、残りは中間パスとして持つ。
+// `category` には分類フォルダ（タスク/ 直下の第1階層）が入る。
+// 深い階層は source のパスから復元する。
+//   例) source = "タスク/E-趣味/AIToDoアプリ/2.Obsidian→スプシ改善/_概要.md"
+//       category = "E-趣味" / 中間 = ["AIToDoアプリ"]
+// 古いデータで category にフルパスが入っている場合にも耐えるよう、
+// "/" を含むときは先頭だけを分類として扱う。
 function splitCategory(category) {
   const parts = String(category || "").split("/").map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) return { folder: "未分類", rest: [] };
   return { folder: parts[0], rest: parts.slice(1) };
+}
+
+// 分類フォルダと大タスクの間にあるフォルダを取り出す。
+function middlePath(project) {
+  const source = String(project.source || "");
+  if (!source) return splitCategory(project.category).rest;
+  const parts = source.split("/").filter(Boolean);
+  // 先頭の "タスク" と分類フォルダ、末尾のファイル名と大タスク自身のフォルダを除く
+  const body = parts.slice(0, -1); // ファイル名を落とす
+  const start = body[0] === "タスク" ? 2 : 1; // "タスク" と分類フォルダ
+  return body.slice(start, -1); // 大タスク自身のフォルダも落とす
 }
 
 // 分類フォルダ → 大タスク → 小タスク の3階層を組む。
@@ -298,8 +313,8 @@ function buildFolderTree(tasks, projects, options = {}) {
   tasks.forEach((task) => {
     const project = byId.get(task.projectId);
     if (project) {
-      const { folder, rest } = splitCategory(project.category);
-      groupFor(project, folder, rest).tasks.push(task);
+      const { folder } = splitCategory(project.category);
+      groupFor(project, folder, middlePath(project)).tasks.push(task);
     } else {
       const placeholder = { id: `__unknown__${task.projectId || ""}`, name: task.projectId || "所属なし" };
       groupFor(placeholder, "所属不明", []).tasks.push(task);
@@ -335,6 +350,7 @@ if (typeof module !== "undefined" && module.exports) {
     groupByDeadline,
     buildFolderTree,
     splitCategory,
+    middlePath,
     hasUnconfirmedAi,
     isOpen,
     isDone,
