@@ -216,7 +216,7 @@ test("AI提案: 確定タスクと別枠に出る（受け入れ条件15）", as
   await addTaskViaUi(ctx, { title: "確定タスク", deadline: localInput(3) });
 
   ctx.app.state.tasks.push(
-    ctx.app.makeTask({ title: "AIの提案", decisionStatus: "proposed", aiGenerated: true })
+    ctx.app.makeTask({ title: "AIの提案", confirmation: "proposed", aiGenerated: true })
   );
   ctx.app.render();
 
@@ -229,7 +229,7 @@ test("AI提案: 採用すると確定タスクへ移る（受け入れ条件12�
   const ctx = boot();
   await settle();
   ctx.app.state.tasks.push(
-    ctx.app.makeTask({ title: "採用する提案", decisionStatus: "proposed", aiGenerated: true, deadline: new Date(Date.now() + 7200000).toISOString() })
+    ctx.app.makeTask({ title: "採用する提案", confirmation: "proposed", aiGenerated: true, deadline: new Date(Date.now() + 7200000).toISOString() })
   );
   ctx.app.render();
   click($(ctx.doc, "#proposal-list .task-check"));
@@ -436,7 +436,7 @@ function stubGoogle(window, { tokenResponse } = {}) {
   return client;
 }
 
-function stubSheetsApi(window, { tabs = ["tasks"], values = null } = {}) {
+function stubSheetsApi(window, { tabs = ["Tasks"], values = null } = {}) {
   const calls = [];
   window.fetch = async (url, init) => {
     calls.push({ url: String(url), method: (init && init.method) || "GET", init });
@@ -564,11 +564,14 @@ test("接続: 押すとトークンを取得し、シートを読み込む（受
   await settle();
 
   stubGoogle(ctx.window);
-  const header = ["id", "title", "description", "priority", "weight", "deadline", "urgency", "status",
-    "decisionStatus", "sources", "aiExtracted", "aiGenerated", "aiEstimatedFields", "confirmedFields",
-    "createdAt", "updatedAt", "completedAt", "archivedAt", "version"];
+  const header = ["task_id", "project_id", "title", "description", "status", "confirmation",
+    "priority", "importance", "urgency", "effort", "deadline", "executor", "autonomy", "blockedBy",
+    "nextAction", "definitionOfDone", "sources", "updated", "aiExtracted", "aiGenerated",
+    "aiEstimatedFields", "confirmedFields", "createdAt", "updatedAt", "completedAt", "archivedAt", "version"];
   const calls = stubSheetsApi(ctx.window, {
-    values: [header, ["t1", "シートから読んだタスク", "", "high", "medium", "", "", "todo", "confirmed", "", "TRUE", "FALSE", "", "", "", "", "", "", "1"]],
+    values: [header, ["t1", "p1", "シートから読んだタスク", "", "未着手", "confirmed",
+      "high", "high", "", "medium", "", "本人", "", "[]", "", "", "[]", "", "TRUE", "FALSE",
+      "[]", "[]", "", "", "", "", "1"]],
   });
 
   click($(ctx.doc, "#btn-connect"));
@@ -595,14 +598,24 @@ test("接続: 更新を押すとシートへ書き戻す（受け入れ条件5�
   click($(ctx.doc, "#btn-sync"));
   await settle(); await settle(); await settle();
 
-  const put = calls.find((c) => c.method === "PUT");
-  assert.ok(put, "PUTでシートへ書き込む");
-  assert.match(put.url, /valueInputOption=RAW/);
-  assert.match(put.init.body, /書き戻すタスク/);
+  // [変更 2026-07-28] タブ全体のPUTをやめ、行単位の更新と追加に変えた。
+  // 全面PUTは列が1つずれただけで正本を壊すため。
+  // 空シートなので見出し行のPUTは1回だけ許される。行データはそこに含めない。
+  const puts = calls.filter((c) => c.method === "PUT");
+  assert.ok(puts.length <= 1, "タブ全体を繰り返しPUTで置き換えない");
+  if (puts.length === 1) {
+    assert.ok(!/書き戻すタスク/.test(puts[0].init.body), "PUTは見出し行だけ");
+  }
+  const write = calls.find((c) => c.method === "POST" && /:append|values:batchUpdate/.test(c.url));
+  assert.ok(write, "行単位でシートへ書き込む");
+  assert.match(write.url, /valueInputOption=RAW/);
+  assert.match(write.init.body, /書き戻すタスク/);
   assert.strictEqual($(ctx.doc, "#sync-state").dataset.state, "saved");
 });
 
-test("接続: タブ名が違っても先頭のタブで代用し、その旨を伝える", async () => {
+test("接続: 想定のタブが無ければ代用せず止まる", async () => {
+  // [変更 2026-07-28] 以前は先頭のタブで代用していた。tasks -> Tasks の移行時に
+  // 列構成の違うシートを掴んで全面上書きしかけたため、止まる挙動に変えた。
   const ctx = boot(new Map(), { authMode: "oauth", clientId: "dummy.apps.googleusercontent.com" });
   await settle();
   stubGoogle(ctx.window);
@@ -610,7 +623,24 @@ test("接続: タブ名が違っても先頭のタブで代用し、その旨を
 
   click($(ctx.doc, "#btn-connect"));
   await settle(); await settle(); await settle();
-  assert.match(text(ctx.doc, "#notice"), /タブが無いため「AI Todo タスク正本」を読みました/);
+  assert.match(text(ctx.doc, "#notice"), /タブが見つかりません/);
+  assert.strictEqual($(ctx.doc, "#sync-state").dataset.state, "error");
+});
+
+test("接続: 見出しが別スキーマなら読み込まず、書き込みにも行かない", async () => {
+  const ctx = boot(new Map(), { authMode: "oauth", clientId: "dummy.apps.googleusercontent.com" });
+  await settle();
+  stubGoogle(ctx.window);
+  const calls = stubSheetsApi(ctx.window, {
+    values: [["id", "title", "weight"], ["t1", "旧スキーマの行", "light"]],
+  });
+
+  click($(ctx.doc, "#btn-connect"));
+  await settle(); await settle(); await settle();
+
+  assert.match(text(ctx.doc, "#notice"), /見出し行が想定と違います/);
+  assert.strictEqual($(ctx.doc, "#sync-state").dataset.state, "error");
+  assert.ok(!calls.some((c) => c.method === "PUT" || c.method === "POST"), "書き込みへ進まない");
 });
 
 test("接続: 切断するとボタンが戻る", async () => {

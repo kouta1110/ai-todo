@@ -5,6 +5,20 @@
 const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 };
 const URGENCY_ORDER = { high: 0, medium: 1, low: 2 };
 
+// Obsidianの状態語彙をそのまま使う（`タスク/フォーマット.md`）。
+const OPEN_STATUSES = ["未着手", "進行中", "保留"];
+const CLOSED_STATUSES = ["完了", "キャンセル"];
+
+function isOpen(task) {
+  return OPEN_STATUSES.includes(task.status);
+}
+function isDone(task) {
+  return task.status === "完了";
+}
+function isArchived(task) {
+  return task.status === "キャンセル" || Boolean(task.archivedAt);
+}
+
 function generateId() {
   return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -25,15 +39,23 @@ function makeTask(partial = {}) {
   const created = partial.createdAt || nowIso();
   return {
     id: partial.id || generateId(),
+    projectId: partial.projectId || null,
     title: (partial.title || "").trim(),
     description: partial.description || "",
+    status: partial.status || "未着手",
+    confirmation: partial.confirmation || "confirmed",
     priority: partial.priority || "medium",
-    weight: partial.weight || "medium",
-    deadline: partial.deadline || null,
+    importance: partial.importance || "medium",
     urgency: partial.urgency || null,
-    status: partial.status || "todo",
-    decisionStatus: partial.decisionStatus || "confirmed",
+    effort: partial.effort || "medium",
+    deadline: partial.deadline || null,
+    executor: partial.executor || "本人",
+    autonomy: partial.autonomy || "",
+    blockedBy: toArray(partial.blockedBy),
+    nextAction: partial.nextAction || "",
+    definitionOfDone: partial.definitionOfDone || "",
     sources: toArray(partial.sources),
+    updated: partial.updated || "",
     aiExtracted: Boolean(partial.aiExtracted),
     aiGenerated: Boolean(partial.aiGenerated),
     aiEstimatedFields: toArray(partial.aiEstimatedFields),
@@ -43,6 +65,27 @@ function makeTask(partial = {}) {
     completedAt: partial.completedAt || null,
     archivedAt: partial.archivedAt || null,
     version: Number.isFinite(Number(partial.version)) ? Number(partial.version) : 1,
+  };
+}
+
+// 大タスク。Obsidianの `_概要.md` が正本で、アプリからは書き込まない。
+function makeProject(partial = {}) {
+  return {
+    id: partial.id || "",
+    parentId: partial.parentId || null,
+    name: partial.name || "",
+    category: partial.category || "",
+    activity: partial.activity || "",
+    status: partial.status || "候補",
+    phase: partial.phase || "",
+    priority: partial.priority || "",
+    progress: partial.progress === "" || partial.progress == null ? null : Number(partial.progress),
+    taskCount: Number(partial.taskCount) || 0,
+    nextAction: partial.nextAction || "",
+    blockedBy: toArray(partial.blockedBy),
+    autonomy: partial.autonomy || "",
+    updated: partial.updated || "",
+    source: partial.source || "",
   };
 }
 
@@ -71,17 +114,19 @@ function applyEdit(task, changes) {
 }
 
 function completeTask(task) {
-  return { ...task, status: "done", completedAt: nowIso(), updatedAt: nowIso() };
+  return { ...task, status: "完了", completedAt: nowIso(), updatedAt: nowIso() };
 }
 
 function reopenTask(task) {
-  return { ...task, status: "todo", completedAt: null, archivedAt: null, updatedAt: nowIso() };
+  return { ...task, status: "未着手", completedAt: null, archivedAt: null, updatedAt: nowIso() };
 }
 
 // 物理削除ではなくアーカイブで代替する（要件4.8）。
 // アーカイブ済みであることをスプレッドシートに残すので、次回のAI更新で同じ内容が復活しない。
+// Obsidian側に「アーカイブ」という状態は無いので、`キャンセル` に寄せたうえで
+// `archivedAt` で区別する（GASの移行マッピングと同じ扱い）。
 function archiveTask(task) {
-  return { ...task, status: "archived", archivedAt: nowIso(), updatedAt: nowIso() };
+  return { ...task, status: "キャンセル", archivedAt: nowIso(), updatedAt: nowIso() };
 }
 
 // 本人が確定した項目はAI更新で上書きしない（要件4.10 / 6.3）。
@@ -98,7 +143,7 @@ function mergeAiUpdate(current, incoming) {
     }
     merged[key] = value;
   });
-  if (current.status === "done" || current.status === "archived") {
+  if (CLOSED_STATUSES.includes(current.status) || current.archivedAt) {
     merged.status = current.status;
     merged.completedAt = current.completedAt;
     merged.archivedAt = current.archivedAt;
@@ -144,7 +189,7 @@ function sortTasks(tasks, options = {}) {
 
 // AIが推定または生成した項目のうち、本人がまだ確認していないものがあるか（要件4.4）。
 function hasUnconfirmedAi(task) {
-  if (task.aiGenerated && task.decisionStatus === "proposed") return true;
+  if (task.aiGenerated && task.confirmation === "proposed") return true;
   return task.aiEstimatedFields.some((f) => !task.confirmedFields.includes(f));
 }
 
@@ -163,9 +208,13 @@ function daysUntilDeadline(task, now = new Date()) {
 function filterTasks(tasks, filters = {}, now = new Date()) {
   return tasks.filter((task) => {
     if (filters.status && task.status !== filters.status) return false;
-    if (filters.decisionStatus && task.decisionStatus !== filters.decisionStatus) return false;
+    if (filters.open && !isOpen(task)) return false;
+    if (filters.confirmation && task.confirmation !== filters.confirmation) return false;
+    if (filters.projectId && task.projectId !== filters.projectId) return false;
     if (filters.priority && task.priority !== filters.priority) return false;
-    if (filters.weight && task.weight !== filters.weight) return false;
+    if (filters.importance && task.importance !== filters.importance) return false;
+    if (filters.effort && task.effort !== filters.effort) return false;
+    if (filters.executor && task.executor !== filters.executor) return false;
     if (filters.hasDeadline && !task.deadline) return false;
     if (filters.urgentOnly && task.urgency !== "high" && !isOverdue(task, now)) return false;
     if (filters.aiUnconfirmedOnly && !hasUnconfirmedAi(task)) return false;
@@ -209,10 +258,72 @@ function groupByDeadline(tasks, now = new Date()) {
   return groups;
 }
 
+// ---- 分類フォルダ（Obsidianのフォルダ構造の再現） ----
+
+// Projectsの `category` は深さがまちまち（"A-就活" / "趣味/新規事業立案/営業支援AI"）。
+// 先頭の区切りまでを分類フォルダとして扱い、残りは中間パスとして持つ。
+function splitCategory(category) {
+  const parts = String(category || "").split("/").map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return { folder: "未分類", rest: [] };
+  return { folder: parts[0], rest: parts.slice(1) };
+}
+
+// 分類フォルダ → 大タスク → 小タスク の3階層を組む。
+// 小タスクは projectId で大タスクへ、大タスクは category で分類へぶら下げる。
+// projectId が解決できない小タスクは捨てずに「所属不明」へ集める。
+function buildFolderTree(tasks, projects, options = {}) {
+  const byId = new Map(projects.map((p) => [p.id, p]));
+  const folders = [];
+  const folderIndex = new Map();
+
+  const folderFor = (name) => {
+    if (!folderIndex.has(name)) {
+      const f = { key: name, label: name, projects: [], taskCount: 0, openCount: 0 };
+      folderIndex.set(name, f);
+      folders.push(f);
+    }
+    return folderIndex.get(name);
+  };
+
+  const groupIndex = new Map();
+  const groupFor = (project, folderName, path) => {
+    if (!groupIndex.has(project.id)) {
+      const g = { project, path, tasks: [] };
+      groupIndex.set(project.id, g);
+      folderFor(folderName).projects.push(g);
+    }
+    return groupIndex.get(project.id);
+  };
+
+  tasks.forEach((task) => {
+    const project = byId.get(task.projectId);
+    if (project) {
+      const { folder, rest } = splitCategory(project.category);
+      groupFor(project, folder, rest).tasks.push(task);
+    } else {
+      const placeholder = { id: `__unknown__${task.projectId || ""}`, name: task.projectId || "所属なし" };
+      groupFor(placeholder, "所属不明", []).tasks.push(task);
+    }
+  });
+
+  folders.forEach((f) => {
+    f.projects.forEach((g) => {
+      f.taskCount += g.tasks.length;
+      f.openCount += g.tasks.filter(isOpen).length;
+    });
+  });
+
+  if (options.hideEmpty !== false) {
+    return folders.filter((f) => f.taskCount > 0);
+  }
+  return folders;
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     generateId,
     makeTask,
+    makeProject,
     validateTask,
     applyEdit,
     completeTask,
@@ -222,8 +333,15 @@ if (typeof module !== "undefined" && module.exports) {
     sortTasks,
     filterTasks,
     groupByDeadline,
+    buildFolderTree,
+    splitCategory,
     hasUnconfirmedAi,
+    isOpen,
+    isDone,
+    isArchived,
     isOverdue,
     daysUntilDeadline,
+    OPEN_STATUSES,
+    CLOSED_STATUSES,
   };
 }

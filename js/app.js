@@ -5,6 +5,11 @@ let currentView = "list";
 let editingId = null;
 const filters = {};
 
+// 一覧のまとめ方。"deadline" は期限順（従来）、"folder" は分類フォルダ順。
+let groupMode = "deadline";
+// 畳んでいる分類フォルダ。開閉は画面の状態なので保存しない。
+const collapsedFolders = new Set();
+
 // ---- 小さな道具 ----
 
 const $ = (sel) => document.querySelector(sel);
@@ -232,7 +237,8 @@ function buildTaskRow(task, options = {}) {
   const time = formatDeadline(task.deadline);
   if (time) meta.appendChild(el("span", "tag", `${time}まで`));
   meta.appendChild(el("span", "tag", `優先 ${labelOf(APP_CONFIG.priorities, task.priority)}`));
-  meta.appendChild(el("span", "tag", `重さ ${labelOf(APP_CONFIG.weights, task.weight)}`));
+  meta.appendChild(el("span", "tag", `重さ ${labelOf(APP_CONFIG.efforts, task.effort)}`));
+  if (task.status !== "未着手") meta.appendChild(el("span", "tag", task.status));
   if (task.urgency === "high" || isOverdue(task)) {
     meta.appendChild(el("span", "tag urgent", isOverdue(task) ? "期限切れ" : "すぐ"));
   } else if (task.urgency) {
@@ -249,17 +255,35 @@ function renderList() {
   const container = $("#task-list");
   container.innerHTML = "";
 
-  const active = filterTasks(store.tasks, { ...filters, status: "todo", decisionStatus: "confirmed" });
+  const active = filterTasks(store.tasks, { ...filters, open: true, confirmation: "confirmed" });
   const sorted = sortTasks(active, { noDeadlinePosition: APP_CONFIG.display.noDeadlinePosition });
-  const groups = groupByDeadline(sorted);
 
-  if (groups.length === 0) {
+  if (sorted.length === 0) {
     container.appendChild(
       el("p", "empty", store.tasks.length === 0 ? "タスクがありません。" : "この条件に合うタスクはありません。")
     );
+  } else if (groupMode === "folder") {
+    renderFolderGroups(container, sorted);
+  } else {
+    renderDeadlineGroups(container, sorted);
   }
 
-  groups.forEach((group) => {
+  // AI提案は別枠（要件4.3）
+  const proposals = filterTasks(store.tasks, { open: true, confirmation: "proposed" });
+  const box = $("#proposals");
+  const list = $("#proposal-list");
+  list.innerHTML = "";
+  box.classList.toggle("hidden", proposals.length === 0);
+  sortTasks(proposals, { noDeadlinePosition: APP_CONFIG.display.noDeadlinePosition }).forEach((task) =>
+    list.appendChild(
+      buildTaskRow(task, { action: { label: "採用", onClick: (t) => acceptProposal(t.id) } })
+    )
+  );
+}
+
+// 期限順（従来の表示）
+function renderDeadlineGroups(container, sorted) {
+  groupByDeadline(sorted).forEach((group) => {
     const section = el("section", "date-group");
     section.dataset.kind = group.key === "overdue" ? "overdue" : group.key === "none" ? "none" : "date";
     const head = el("div", "date-head");
@@ -273,26 +297,83 @@ function renderList() {
     );
     container.appendChild(section);
   });
+}
 
-  // AI提案は別枠（要件4.3）
-  const proposals = filterTasks(store.tasks, { status: "todo", decisionStatus: "proposed" });
-  const box = $("#proposals");
-  const list = $("#proposal-list");
-  list.innerHTML = "";
-  box.classList.toggle("hidden", proposals.length === 0);
-  sortTasks(proposals, { noDeadlinePosition: APP_CONFIG.display.noDeadlinePosition }).forEach((task) =>
-    list.appendChild(
-      buildTaskRow(task, { action: { label: "採用", onClick: (t) => acceptProposal(t.id) } })
-    )
-  );
+// 分類フォルダ → 大タスク → 小タスク の3階層。
+// Obsidianのフォルダ構造をそのまま辿れるようにして、どの活動の話かを見失わないようにする。
+function renderFolderGroups(container, sorted) {
+  const folders = buildFolderTree(sorted, store.projects);
+
+  if (folders.length === 0) {
+    container.appendChild(el("p", "empty", "表示できる分類がありません。"));
+    return;
+  }
+
+  folders.forEach((folder) => {
+    const section = el("section", "folder-group");
+    section.dataset.folder = folder.key;
+
+    const head = el("button", "folder-head");
+    head.type = "button";
+    head.setAttribute("aria-expanded", String(!collapsedFolders.has(folder.key)));
+    head.appendChild(el("span", "folder-caret", collapsedFolders.has(folder.key) ? "▸" : "▾"));
+    head.appendChild(el("h2", null, folder.label));
+    head.appendChild(el("span", "count", `${folder.openCount}件`));
+    head.addEventListener("click", () => {
+      if (collapsedFolders.has(folder.key)) collapsedFolders.delete(folder.key);
+      else collapsedFolders.add(folder.key);
+      render();
+    });
+    section.appendChild(head);
+
+    if (!collapsedFolders.has(folder.key)) {
+      folder.projects.forEach((group) => {
+        const box = el("div", "project-group");
+        const ph = el("div", "project-head");
+
+        // 中間フォルダ（趣味/新規事業立案/… の途中）はパンくずで出す
+        if (group.path.length > 0) {
+          ph.appendChild(el("span", "project-path", group.path.join(" / ")));
+        }
+        ph.appendChild(el("h3", null, group.project.name || group.project.id));
+
+        const progress = group.project.progress;
+        if (progress != null && !Number.isNaN(progress)) {
+          const pct = Math.round(progress * 100);
+          const bar = el("div", "progress");
+          bar.setAttribute("role", "img");
+          bar.setAttribute("aria-label", `進捗 ${pct}パーセント`);
+          const fill = el("div", "progress-fill");
+          fill.style.width = `${pct}%`;
+          bar.appendChild(fill);
+          ph.appendChild(bar);
+          ph.appendChild(el("span", "count", `${pct}%`));
+        }
+        if (group.project.status) ph.appendChild(el("span", "tag", group.project.status));
+        box.appendChild(ph);
+
+        if (group.project.nextAction) {
+          box.appendChild(el("p", "project-next", `次の一手: ${group.project.nextAction}`));
+        }
+
+        group.tasks.forEach((task) =>
+          box.appendChild(
+            buildTaskRow(task, { action: { label: "完了", onClick: (t) => changeStatus(t.id, "done") } })
+          )
+        );
+        section.appendChild(box);
+      });
+    }
+    container.appendChild(section);
+  });
 }
 
 function renderArchive() {
   const done = store.tasks
-    .filter((t) => t.status === "done")
+    .filter((t) => isDone(t))
     .sort((a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0));
   const archived = store.tasks
-    .filter((t) => t.status === "archived")
+    .filter((t) => isArchived(t) && !isDone(t))
     .sort((a, b) => new Date(b.archivedAt || 0) - new Date(a.archivedAt || 0));
 
   const fill = (node, tasks, emptyText) => {
@@ -326,14 +407,16 @@ function openDetail(id) {
   $("#f-title").value = task ? task.title : "";
   $("#f-description").value = task ? task.description : "";
   $("#f-priority").value = task ? task.priority : "medium";
-  $("#f-weight").value = task ? task.weight : "medium";
+  // DOM上のidは #f-weight のまま（画面の見出しは「重さ」）。
+  // データ側の項目名だけ Obsidian に合わせて effort へ変えてある。
+  $("#f-weight").value = task ? task.effort : "medium";
   $("#f-deadline").value = task ? toInputValue(task.deadline) : "";
   $("#f-urgency").value = task && task.urgency ? task.urgency : "";
   $("#form-errors").classList.add("hidden");
 
-  $("#btn-complete").classList.toggle("hidden", !task || task.status !== "todo");
-  $("#btn-archive").classList.toggle("hidden", !task || task.status === "archived");
-  $("#btn-reopen").classList.toggle("hidden", !task || task.status === "todo");
+  $("#btn-complete").classList.toggle("hidden", !task || !isOpen(task));
+  $("#btn-archive").classList.toggle("hidden", !task || isArchived(task));
+  $("#btn-reopen").classList.toggle("hidden", !task || isOpen(task));
 
   renderAiInfo(task);
   renderSourceInfo(task);
@@ -392,7 +475,7 @@ function saveForm(e) {
     title: $("#f-title").value.trim(),
     description: $("#f-description").value.trim(),
     priority: $("#f-priority").value,
-    weight: $("#f-weight").value,
+    effort: $("#f-weight").value,
     deadline: deadlineRaw ? new Date(deadlineRaw).toISOString() : null,
     urgency: $("#f-urgency").value || null,
   };
@@ -448,7 +531,22 @@ function setupFilters() {
     });
   };
   build($("#filter-priority"), APP_CONFIG.priorities, "priority");
-  build($("#filter-weight"), APP_CONFIG.weights, "weight");
+  build($("#filter-weight"), APP_CONFIG.efforts, "effort");
+
+  // 期限順 / フォルダ順の切り替え
+  const toggle = $("#btn-group-mode");
+  if (toggle) {
+    const sync = () => {
+      toggle.textContent = groupMode === "folder" ? "フォルダ順" : "期限順";
+      toggle.setAttribute("aria-pressed", String(groupMode === "folder"));
+    };
+    toggle.addEventListener("click", () => {
+      groupMode = groupMode === "folder" ? "deadline" : "folder";
+      sync();
+      render();
+    });
+    sync();
+  }
 
   document.querySelectorAll("[data-flag]").forEach((btn) => {
     btn.setAttribute("aria-pressed", "false");
@@ -485,7 +583,7 @@ function render() {
 function initApp() {
   setupSplash();
   fillSelect($("#f-priority"), APP_CONFIG.priorities);
-  fillSelect($("#f-weight"), APP_CONFIG.weights);
+  fillSelect($("#f-weight"), APP_CONFIG.efforts);
   fillSelect($("#f-urgency"), APP_CONFIG.urgencies, true);
   setupFilters();
 

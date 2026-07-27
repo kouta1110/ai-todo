@@ -32,7 +32,8 @@ const api = vm.runInContext(
     makeTask, validateTask, applyEdit, completeTask, reopenTask, archiveTask, mergeAiUpdate,
     sortTasks, filterTasks, groupByDeadline, hasUnconfirmedAi, isOverdue, daysUntilDeadline,
     headerRow, taskToRow, rowToTask, buildColumnIndex, missingColumns, detectConflicts,
-    parseValues, resolveTabName, tabTitlesFrom, selectProvider, LocalDraftProvider, GoogleSheetsProvider,
+    parseValues,
+  mergeRow, resolveTabName, tabTitlesFrom, selectProvider, LocalDraftProvider, GoogleSheetsProvider,
     store, init, load, save, addTask, editTask, setStatus, confirmProposal, isDirty, getTask,
     GoogleAuth, isTokenValid, TOKEN_EXPIRY_MARGIN_MS,
   })`,
@@ -43,7 +44,7 @@ const {
   APP_CONFIG, makeTask, validateTask, applyEdit, completeTask, archiveTask, mergeAiUpdate,
   sortTasks, filterTasks, groupByDeadline, hasUnconfirmedAi, isOverdue,
   headerRow, taskToRow, rowToTask, buildColumnIndex, missingColumns, detectConflicts,
-  parseValues, resolveTabName, tabTitlesFrom, selectProvider, LocalDraftProvider,
+  parseValues, mergeRow, resolveTabName, tabTitlesFrom, selectProvider, LocalDraftProvider,
   store, init, load, save, addTask, editTask, setStatus, confirmProposal, isDirty, getTask,
   GoogleAuth, isTokenValid, TOKEN_EXPIRY_MARGIN_MS,
 } = api;
@@ -63,9 +64,9 @@ const hoursFromNow = (h) => new Date(NOW.getTime() + h * 3600000).toISOString();
 test("既定値: 未指定の項目が埋まる", () => {
   const t = makeTask({ title: "A" });
   assert.strictEqual(t.priority, "medium");
-  assert.strictEqual(t.weight, "medium");
-  assert.strictEqual(t.status, "todo");
-  assert.strictEqual(t.decisionStatus, "confirmed");
+  assert.strictEqual(t.effort, "medium");
+  assert.strictEqual(t.status, "未着手");
+  assert.strictEqual(t.confirmation, "confirmed");
   assert.strictEqual(t.version, 1);
   assert.deepStrictEqual(arr(t.sources), []);
   assert.ok(t.id && t.createdAt && t.updatedAt);
@@ -91,26 +92,26 @@ test("編集: 触った項目が confirmedFields に積まれる（要件6.3）"
 
 test("AI更新: 本人が確定した項目を上書きしない（受け入れ条件11）", () => {
   const base = applyEdit(makeTask({ title: "A", priority: "low" }), { priority: "high" });
-  const merged = mergeAiUpdate(base, { priority: "low", weight: "heavy", title: "AIが直した名前" });
+  const merged = mergeAiUpdate(base, { priority: "low", effort: "heavy", title: "AIが直した名前" });
   assert.strictEqual(merged.priority, "high", "確定済みの優先順位は守られる");
-  assert.strictEqual(merged.weight, "heavy", "未確定の項目は反映される");
+  assert.strictEqual(merged.effort, "heavy", "未確定の項目は反映される");
   assert.strictEqual(merged.title, "AIが直した名前");
   assert.strictEqual(JSON.stringify(merged.pendingProposal), '{"priority":"low"}', "弾いた提案は別に残す");
 });
 
 test("AI更新: 完了・アーカイブ状態を壊さない（受け入れ条件11）", () => {
   const done = completeTask(makeTask({ title: "A" }));
-  const merged = mergeAiUpdate(done, { status: "todo", title: "A" });
-  assert.strictEqual(merged.status, "done");
+  const merged = mergeAiUpdate(done, { status: "未着手", title: "A" });
+  assert.strictEqual(merged.status, "完了");
   assert.ok(merged.completedAt);
 
   const archived = archiveTask(makeTask({ title: "B" }));
-  assert.strictEqual(mergeAiUpdate(archived, { status: "todo" }).status, "archived");
+  assert.strictEqual(mergeAiUpdate(archived, { status: "未着手" }).status, "キャンセル");
 });
 
 test("アーカイブ: 物理削除せず記録を残す（要件4.8）", () => {
   const t = archiveTask(makeTask({ title: "A" }));
-  assert.strictEqual(t.status, "archived");
+  assert.strictEqual(t.status, "キャンセル");
   assert.ok(t.archivedAt);
 });
 
@@ -142,11 +143,11 @@ test("並び順: 期限なしの位置を設定で変えられる（要決定事
 
 test("絞り込み: 優先順位・重さで絞れる（要件4.5）", () => {
   const list = [
-    makeTask({ title: "A", priority: "high", weight: "light" }),
-    makeTask({ title: "B", priority: "low", weight: "heavy" }),
+    makeTask({ title: "A", priority: "high", effort: "light" }),
+    makeTask({ title: "B", priority: "low", effort: "heavy" }),
   ];
   assert.deepStrictEqual(arr(filterTasks(list, { priority: "high" })).map((t) => t.title), ["A"]);
-  assert.deepStrictEqual(arr(filterTasks(list, { weight: "heavy" })).map((t) => t.title), ["B"]);
+  assert.deepStrictEqual(arr(filterTasks(list, { effort: "heavy" })).map((t) => t.title), ["B"]);
 });
 
 test("絞り込み: 期限あり・緊急・AI未確認で絞れる（要件4.5）", () => {
@@ -170,11 +171,11 @@ test("絞り込み: 期限切れも緊急に含める", () => {
 test("AI未確認: 本人が確認した項目は未確認に数えない（要件4.4）", () => {
   const t = makeTask({ title: "A", aiEstimatedFields: ["deadline"], confirmedFields: ["deadline"] });
   assert.strictEqual(hasUnconfirmedAi(t), false);
-  assert.strictEqual(hasUnconfirmedAi(makeTask({ title: "B", aiEstimatedFields: ["weight"] })), true);
+  assert.strictEqual(hasUnconfirmedAi(makeTask({ title: "B", aiEstimatedFields: ["effort"] })), true);
 });
 
 test("AI未確認: 未採用のAI生成タスクは未確認扱い", () => {
-  const t = makeTask({ title: "A", aiGenerated: true, decisionStatus: "proposed" });
+  const t = makeTask({ title: "A", aiGenerated: true, confirmation: "proposed" });
   assert.strictEqual(hasUnconfirmedAi(t), true);
 });
 
@@ -193,8 +194,8 @@ test("日付の見出し: 期限切れ／今日／明日／期限なしに分か
 
 test("見出し行: 論理名から列名へ変換される（要件6.1）", () => {
   const header = arr(headerRow(APP_CONFIG));
-  assert.strictEqual(header.length, 19);
-  assert.strictEqual(header[0], "id");
+  assert.strictEqual(header.length, 27);
+  assert.strictEqual(header[0], "task_id");
   assert.ok(header.includes("confirmedFields"));
 });
 
@@ -203,12 +204,12 @@ test("行変換: 書き出して読み戻すと同じ値になる", () => {
     title: "面談ログを整理する",
     description: "7/25の分",
     priority: "high",
-    weight: "heavy",
+    effort: "heavy",
     deadline: hoursFromNow(20),
     urgency: "high",
     sources: ["50_活動/学習.md", "80_受信箱/メモ.md"],
     aiExtracted: true,
-    aiEstimatedFields: ["deadline", "weight"],
+    aiEstimatedFields: ["deadline", "effort"],
     confirmedFields: ["priority"],
     version: 3,
   });
@@ -216,18 +217,18 @@ test("行変換: 書き出して読み戻すと同じ値になる", () => {
   const index = buildColumnIndex(arr(headerRow(APP_CONFIG)), APP_CONFIG);
   const back = rowToTask(row, index, APP_CONFIG);
 
-  ["title", "description", "priority", "weight", "deadline", "urgency", "status", "decisionStatus", "version"]
+  ["title", "description", "priority", "effort", "deadline", "urgency", "status", "confirmation", "version"]
     .forEach((f) => assert.strictEqual(back[f], original[f], `${f} が一致しない`));
   assert.strictEqual(back.aiExtracted, true);
   assert.strictEqual(back.aiGenerated, false);
   assert.deepStrictEqual(arr(back.sources), ["50_活動/学習.md", "80_受信箱/メモ.md"]);
-  assert.deepStrictEqual(arr(back.aiEstimatedFields), ["deadline", "weight"]);
+  assert.deepStrictEqual(arr(back.aiEstimatedFields), ["deadline", "effort"]);
 });
 
 test("行変換: 列の順番が入れ替わっても見出しで対応づける", () => {
   const values = [
-    ["title", "id", "priority"],
-    ["並び替えテスト", "t1", "high"],
+    ["title", "task_id", "priority", "status"],
+    ["並び替えテスト", "t1", "high", "未着手"],
   ];
   const { tasks } = parseValues(values, APP_CONFIG);
   assert.strictEqual(tasks[0].id, "t1");
@@ -236,10 +237,59 @@ test("行変換: 列の順番が入れ替わっても見出しで対応づける
 });
 
 test("行変換: 足りない列を警告する", () => {
-  const { warnings } = parseValues([["id", "title"], ["t1", "A"]], APP_CONFIG);
+  const header = ["task_id", "title", "status"];
+  const { warnings } = parseValues([header, ["t1", "A", "未着手"]], APP_CONFIG);
   assert.strictEqual(warnings.length, 1);
   assert.ok(warnings[0].includes("priority"));
-  assert.ok(arr(missingColumns(["id", "title"], APP_CONFIG)).includes("deadline"));
+  assert.ok(arr(missingColumns(header, APP_CONFIG)).includes("deadline"));
+});
+
+test("行更新: アプリが知らない列を消さない", () => {
+  // 全面PUTをやめて行単位の更新にした理由そのもの。
+  // シート側にアプリが扱わない列があっても、書き戻しで空にしてはいけない。
+  const header = arr(headerRow(APP_CONFIG)).concat(["社内メモ"]);
+  const index = buildColumnIndex(header, APP_CONFIG);
+  const raw = new Array(header.length).fill("");
+  raw[index.id] = "t1";
+  raw[index.title] = "元のタイトル";
+  raw[index.status] = "未着手";
+  raw[header.length - 1] = "消えたら困る値";
+
+  const task = rowToTask(raw, index, APP_CONFIG);
+  task.title = "直したタイトル";
+  const merged = arr(mergeRow(task, index, APP_CONFIG));
+
+  assert.strictEqual(merged[index.title], "直したタイトル");
+  assert.strictEqual(merged[index.id], "t1", "IDを勝手に振り直さない");
+  assert.strictEqual(merged[header.length - 1], "消えたら困る値", "知らない列は温存する");
+});
+
+test("行更新: createdAt は書き換えない", () => {
+  const header = arr(headerRow(APP_CONFIG));
+  const index = buildColumnIndex(header, APP_CONFIG);
+  const raw = new Array(header.length).fill("");
+  raw[index.id] = "t1";
+  raw[index.title] = "A";
+  raw[index.status] = "未着手";
+  raw[index.createdAt] = "2026-01-01T00:00:00+09:00";
+
+  const task = rowToTask(raw, index, APP_CONFIG);
+  task.createdAt = "2099-01-01T00:00:00+09:00";
+  const merged = arr(mergeRow(task, index, APP_CONFIG));
+  assert.strictEqual(merged[index.createdAt], "2026-01-01T00:00:00+09:00");
+});
+
+test("安全弁: 必須列が無いシートは読み込まない", () => {
+  assert.throws(
+    () => parseValues([["id", "title", "weight"], ["t1", "旧スキーマ", "light"]], APP_CONFIG),
+    /見出し行が想定と違います/
+  );
+});
+
+test("安全弁: まっさらなシートは通す（新規作成できるように）", () => {
+  const r = parseValues([], APP_CONFIG);
+  assert.strictEqual(r.isEmpty, true);
+  assert.strictEqual(arr(r.tasks).length, 0);
 });
 
 test("行変換: 空行を読み飛ばす", () => {
@@ -272,26 +322,30 @@ test("接続方式: 設定に応じてアダプタが選ばれる", () => {
 });
 
 test("タブ解決: 設定した名前のタブがあればそれを使う", async () => {
-  const r = await resolveTabName(APP_CONFIG, async () => ["メモ", "tasks", "その他"]);
-  assert.strictEqual(r.tabName, "tasks");
+  const r = await resolveTabName(APP_CONFIG, async () => ["メモ", "Tasks", "その他"]);
+  assert.strictEqual(r.tabName, "Tasks");
   assert.strictEqual(r.substituted, false);
 });
 
-test("タブ解決: 見つからなければ先頭のタブで代用し、代用したことを伝える", async () => {
-  const r = await resolveTabName(APP_CONFIG, async () => ["AI Todo タスク正本", "メモ"]);
+test("タブ解決: 見つからなければ中止する（既定）", async () => {
+  // [変更 2026-07-28] 以前は先頭のタブで代用していた。tasks -> Tasks の移行時に
+  // 別スキーマのシートを掴んで全面上書きしかけたため、既定で止めるようにした。
+  await assert.rejects(
+    () => resolveTabName(APP_CONFIG, async () => ["AI Todo タスク正本", "メモ"]),
+    /タブが見つかりません/
+  );
+});
+
+test("タブ解決: 明示的に許可したときだけ先頭のタブで代用する", async () => {
+  const cfg = { ...APP_CONFIG, sheets: { ...APP_CONFIG.sheets, fallbackToFirstTab: true } };
+  const r = await resolveTabName(cfg, async () => ["AI Todo タスク正本", "メモ"]);
   assert.strictEqual(r.tabName, "AI Todo タスク正本");
   assert.strictEqual(r.substituted, true);
 });
 
-test("タブ解決: 代用を切ると設定した名前をそのまま使う", async () => {
-  const cfg = { ...APP_CONFIG, sheets: { ...APP_CONFIG.sheets, fallbackToFirstTab: false } };
-  const r = await resolveTabName(cfg, async () => { throw new Error("呼ばれてはいけない"); });
-  assert.strictEqual(r.tabName, "tasks");
-  assert.strictEqual(r.substituted, false);
-});
-
 test("タブ解決: タブが1つも無ければエラーにする", async () => {
-  await assert.rejects(() => resolveTabName(APP_CONFIG, async () => []), /タブが1つもありません/);
+  const cfg = { ...APP_CONFIG, sheets: { ...APP_CONFIG.sheets, fallbackToFirstTab: true } };
+  await assert.rejects(() => resolveTabName(cfg, async () => []), /タブが1つもありません/);
 });
 
 test("タブ一覧: APIの応答からタブ名を取り出す", () => {
@@ -490,7 +544,7 @@ async function runStoreTests() {
     await load();
     const r = addTask({ title: "手で足したタスク", priority: "high" });
     assert.deepStrictEqual(arr(r.task.sources), ["本人による直接入力"]);
-    assert.strictEqual(r.task.decisionStatus, "confirmed");
+    assert.strictEqual(r.task.confirmation, "confirmed");
   });
 
   atest("追加: 既定値のままの項目は確定扱いにしない（AI同期が推定できる余地を残す）", async () => {
@@ -620,14 +674,14 @@ async function runStoreTests() {
     const { task } = addTask({ title: "状態を変えるタスク" });
 
     setStatus(task.id, "done");
-    assert.strictEqual(getTask(task.id).status, "done");
+    assert.strictEqual(getTask(task.id).status, "完了");
     assert.ok(getTask(task.id).completedAt);
 
     setStatus(task.id, "archived");
-    assert.strictEqual(getTask(task.id).status, "archived");
+    assert.strictEqual(getTask(task.id).status, "キャンセル");
 
     setStatus(task.id, "todo");
-    assert.strictEqual(getTask(task.id).status, "todo");
+    assert.strictEqual(getTask(task.id).status, "未着手");
     assert.strictEqual(getTask(task.id).completedAt, null);
   });
 
@@ -637,13 +691,13 @@ async function runStoreTests() {
     await load();
     store.tasks.push(makeTask({
       title: "AIが提案したタスク",
-      decisionStatus: "proposed",
+      confirmation: "proposed",
       aiGenerated: true,
       aiEstimatedFields: ["deadline"],
     }));
     const id = store.tasks[0].id;
     confirmProposal(id);
-    assert.strictEqual(getTask(id).decisionStatus, "confirmed");
+    assert.strictEqual(getTask(id).confirmation, "confirmed");
     assert.ok(arr(getTask(id).confirmedFields).includes("deadline"));
     assert.strictEqual(hasUnconfirmedAi(getTask(id)), false);
   });

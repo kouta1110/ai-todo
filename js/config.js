@@ -11,14 +11,23 @@ const APP_CONFIG = {
     // https://docs.google.com/spreadsheets/d/1g6Of2Ve2WaCeVkLt74IR1K3M-9z-w8jdQ9hiON4v2Rs/edit
     spreadsheetId: "1g6Of2Ve2WaCeVkLt74IR1K3M-9z-w8jdQ9hiON4v2Rs",
 
-    // タスクを置くシート（タブ）の名前。ここに書いた名前のタブだけを読み書きし、
+    // 小タスクを置くシート（タブ）の名前。ここに書いた名前のタブだけを読み書きし、
     // 同じスプレッドシート内の他のタブには触らない。
-    tabName: "tasks",
+    tabName: "Tasks",
+
+    // 大タスクを置くシート。読み取り専用で使う（分類・親子関係・進捗の表示用）。
+    // アプリからは書き込まない。大タスクの正本はObsidianの `_概要.md`。
+    projectsTabName: "Projects",
 
     // 上のタブが見つからないとき、先頭のタブで代用するか。
-    // CSVから作ったシートはタブ名がファイル名になることがあるため、既定で有効にしてある。
-    // タブ名を厳密に固定したい場合は false にする。
-    fallbackToFirstTab: true,
+    //
+    // [変更 2026-07-28] false に固定した。
+    // 以前は true だったが、これが原因で事故が起きかけた。シートを
+    // `tasks`（旧19列）から `Tasks`（新27列）へ移行した際、名前が一致しないため
+    // 先頭タブへフォールバックし、列名が違うまま読み込んで `id` を見失い、
+    // 行ごとにランダムなIDを発番したうえで全面上書きしようとした。
+    // 想定と違うシートには、黙って書くより止まるほうが安全。
+    fallbackToFirstTab: false,
 
     // 見出し行が何行目か（1始まり）。
     headerRow: 1,
@@ -66,19 +75,28 @@ const APP_CONFIG = {
   },
 
   // ---- 列マッピング ----
-  // 要件定義書6.1の論理フィールド名 → スプレッドシートの見出し文字列。
-  // 実際の列名が決まったら右側だけを直す（要件定義書10章「実際の列構成」）。
+  // 論理フィールド名 → スプレッドシートの見出し文字列。
+  // 正本は `_AI/scripts/ai_todo_sync.gs` の TASK_COLUMNS / PROJECT_COLUMNS。
+  // GAS側を直したらここも直す。
   columns: {
-    id: "id",
+    id: "task_id",
+    projectId: "project_id",
     title: "title",
     description: "description",
-    priority: "priority",
-    weight: "weight",
-    deadline: "deadline",
-    urgency: "urgency",
     status: "status",
-    decisionStatus: "decisionStatus",
+    confirmation: "confirmation",
+    priority: "priority",
+    importance: "importance",
+    urgency: "urgency",
+    effort: "effort",
+    deadline: "deadline",
+    executor: "executor",
+    autonomy: "autonomy",
+    blockedBy: "blockedBy",
+    nextAction: "nextAction",
+    definitionOfDone: "definitionOfDone",
     sources: "sources",
+    updated: "updated",
     aiExtracted: "aiExtracted",
     aiGenerated: "aiGenerated",
     aiEstimatedFields: "aiEstimatedFields",
@@ -89,6 +107,35 @@ const APP_CONFIG = {
     archivedAt: "archivedAt",
     version: "version",
   },
+
+  // 大タスク（Projectsシート）の列。読み取り専用。
+  projectColumns: {
+    id: "project_id",
+    parentId: "parent_project_id",
+    name: "name",
+    category: "category",
+    activity: "activity",
+    status: "status",
+    phase: "phase",
+    priority: "priority",
+    progress: "progress",
+    taskCount: "taskCount",
+    nextAction: "nextAction",
+    blockedBy: "blockedBy",
+    autonomy: "autonomy",
+    updated: "updated",
+    source: "source",
+    aiExtracted: "aiExtracted",
+    aiEstimatedFields: "aiEstimatedFields",
+    confirmedFields: "confirmedFields",
+    createdAt: "createdAt",
+    updatedAt: "updatedAt",
+    version: "version",
+  },
+
+  // これが見出し行に無ければ、読み込みも保存も行わない。
+  // 別スキーマのシートを掴んだまま書き込んで壊すのを防ぐ最後の砦。
+  requiredColumns: ["id", "title", "status"],
 
   // 配列項目をセルにどう入れるか。要件6.1「JSON文字列または区切り文字列」。
   //   "json"      … ["a","b"] の形で入れる
@@ -102,10 +149,16 @@ const APP_CONFIG = {
     { key: "medium", label: "普通" },
     { key: "low", label: "低い" },
   ],
-  weights: [
+  // タスクの重さ。旧 weight を Obsidian の effort に合わせて改名した。
+  efforts: [
     { key: "light", label: "軽い" },
     { key: "medium", label: "普通" },
     { key: "heavy", label: "重い" },
+  ],
+  importances: [
+    { key: "high", label: "高い" },
+    { key: "medium", label: "普通" },
+    { key: "low", label: "低い" },
   ],
   // 緊急度の段階は要決定（要件定義書10章）。暫定で3段階＋未設定にしてある。
   urgencies: [
@@ -113,14 +166,25 @@ const APP_CONFIG = {
     { key: "medium", label: "近いうち" },
     { key: "low", label: "急がない" },
   ],
+  // Obsidian の値をそのまま使う。todo/done へ変換しない（Obsidianが正本）。
   statuses: [
-    { key: "todo", label: "未完了" },
-    { key: "done", label: "完了" },
-    { key: "archived", label: "アーカイブ" },
+    { key: "未着手", label: "未着手" },
+    { key: "進行中", label: "進行中" },
+    { key: "保留", label: "保留" },
+    { key: "完了", label: "完了" },
+    { key: "キャンセル", label: "キャンセル" },
   ],
-  decisionStatuses: [
+  // 未完了として一覧に出す状態。
+  openStatuses: ["未着手", "進行中", "保留"],
+  confirmations: [
     { key: "confirmed", label: "確定" },
     { key: "proposed", label: "AI提案" },
+  ],
+  executors: [
+    { key: "本人", label: "本人" },
+    { key: "AI", label: "AI" },
+    { key: "共同", label: "共同" },
+    { key: "外部", label: "外部" },
   ],
 
   // ---- 表示 ----

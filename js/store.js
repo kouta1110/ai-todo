@@ -13,6 +13,9 @@ const SYNC_STATES = {
 
 const store = {
   tasks: [],
+  // 大タスク（Projectsシート）。分類フォルダと進捗の表示に使う。
+  // Obsidianが正本なので、アプリからは書き込まない。
+  projects: [],
   // 読み込んだ時点の版番号。保存時の競合検出に使う。
   baseVersions: new Map(),
   syncState: "idle",
@@ -77,7 +80,7 @@ function addTask(partial) {
   if (errors.length > 0) return { ok: false, errors };
   // 本人が直接入力したタスクは、出典と確定区分をそこに合わせる（要件4.7 / 6.2）。
   task.sources = ["本人による直接入力"];
-  task.decisionStatus = "confirmed";
+  task.confirmation = "confirmed";
   // [変更] 既定値のまま保存した項目まで確定扱いにすると、AI同期が一切
   // 上書きできなくなる（期限を空のまま追加したタスクにAIが期限を推定できない）。
   // 実際に既定値から変えた項目だけを確定とする。タスク名は必ず本人が入力するので常に確定。
@@ -112,7 +115,7 @@ function confirmProposal(id) {
   if (!task) return { ok: false, errors: ["タスクが見つかりません"] };
   const next = {
     ...task,
-    decisionStatus: "confirmed",
+    confirmation: "confirmed",
     confirmedFields: [...new Set([...task.confirmedFields, ...task.aiEstimatedFields])],
     updatedAt: new Date().toISOString(),
   };
@@ -125,6 +128,7 @@ async function load() {
   try {
     const result = await store.provider.load(APP_CONFIG);
     store.tasks = result.tasks;
+    store.projects = result.projects || [];
     store.warnings = result.warnings || [];
     store.baseVersions = new Map(result.tasks.map((t) => [t.id, t.version]));
     store.lastLoadedAt = new Date();

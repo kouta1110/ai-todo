@@ -1,395 +1,263 @@
-// gas/ai_todo_sync.gs のロジックを、Apps Scriptを使わずに検証する。
-//   実行: node tests/gas.test.js
-//
-// SpreadsheetApp などを最小限のスタブで置き換えて vm に読み込む。
-// 正本を壊さない保護ルールが実際に効いているかを、貼り付ける前に確認するためのもの。
+// Apps Script API を最小限スタブして ai_todo_sync.gs をNodeで実行する検証ハーネス
+const fs = require('fs');
 
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-const assert = require("assert");
-
-const root = path.join(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "gas/ai_todo_sync.gs"), "utf8");
-
-const HEADER = [
-  "id", "title", "description", "priority", "weight", "deadline", "urgency", "status",
-  "decisionStatus", "sources", "aiExtracted", "aiGenerated", "aiEstimatedFields",
-  "confirmedFields", "createdAt", "updatedAt", "completedAt", "archivedAt", "version",
-];
-
-// ---- Apps Script のスタブ ----
-
-function makeSheet(rows) {
-  const values = [HEADER.slice(), ...rows];
-  return {
-    values,
-    getName: () => "tasks",
-    getDataRange: () => ({ getValues: () => values.map((r) => r.slice()) }),
-    getRange(row, col, numRows, numCols) {
-      return {
-        setValues(block) {
-          block.forEach((r, i) => {
-            const target = row - 1 + i;
-            while (values.length <= target) values.push(new Array(HEADER.length).fill(""));
-            for (let c = 0; c < numCols; c += 1) values[target][col - 1 + c] = r[c];
-          });
-        },
-      };
-    },
-  };
+// ---- 疑似スプレッドシート ----
+class FakeSheet {
+  constructor(name) { this.name = name; this.data = []; this.frozen = 0; }
+  getName() { return this.name; }
+  setName(n) { this.name = n; return this; }
+  clear() { this.data = []; return this; }
+  setFrozenRows(n) { this.frozen = n; return this; }
+  getLastRow() { return this.data.length; }
+  getLastColumn() { return this._width(); }
+  getDataRange() { return this._range(1, 1, Math.max(this.data.length, 0), this._width()); }
+  _width() { return this.data.reduce((m, r) => Math.max(m, r.length), 0); }
+  getRange(row, col, numRows, numCols) { return this._range(row, col, numRows, numCols); }
+  _range(row, col, numRows, numCols) {
+    const sh = this;
+    return {
+      getValues() {
+        const out = [];
+        for (let r = 0; r < numRows; r++) {
+          const src = sh.data[row - 1 + r] || [];
+          const line = [];
+          for (let c = 0; c < numCols; c++) line.push(src[col - 1 + c] === undefined ? '' : src[col - 1 + c]);
+          out.push(line);
+        }
+        return out;
+      },
+      setValues(vals) {
+        vals.forEach((line, r) => {
+          const target = row - 1 + r;
+          if (!sh.data[target]) sh.data[target] = [];
+          line.forEach((v, c) => { sh.data[target][col - 1 + c] = v; });
+        });
+        return this;
+      }
+    };
+  }
 }
 
-function load(sheet) {
-  const logs = [];
-  const sandbox = {
-    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheets: () => [sheet], getSheetByName: () => sheet }) },
-    ContentService: {
-      MimeType: { JSON: "application/json" },
-      createTextOutput: (text) => ({ setMimeType: () => ({ __text: text }) }),
-    },
-    LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },
-    Logger: { log: (m) => logs.push(String(m)) },
-    JSON, Date, Number, String, Object, Math, Array,
-  };
-  vm.createContext(sandbox);
-  vm.runInContext(source, sandbox, { filename: "ai_todo_sync.gs" });
-  const api = vm.runInContext(
-    "({ CFG, upsert, readAll, getSheet, doGet, doPost, testReadAll, isAuthorized })",
-    sandbox
-  );
-  return { api, logs, sandbox };
+class FakeSpreadsheet {
+  constructor() { this.sheets = []; }
+  getSheets() { return this.sheets.slice(); }
+  // 実物の Apps Script と同じく大文字小文字を区別しない
+  getSheetByName(n) {
+    const t = String(n).toLowerCase();
+    return this.sheets.find(s => s.name.toLowerCase() === t) || null;
+  }
+  // Google スプレッドシートは大小違いの同名シートを作れない
+  insertSheet(n) {
+    if (this.getSheetByName(n)) throw new Error('シート名が重複: ' + n);
+    const s = new FakeSheet(n); this.sheets.push(s); return s;
+  }
 }
 
-// 行を組み立てる（既定値つき）
-function row(overrides = {}) {
-  const base = {
-    id: "", title: "", description: "", priority: "medium", weight: "medium", deadline: "",
-    urgency: "", status: "todo", decisionStatus: "confirmed", sources: "", aiExtracted: "FALSE",
-    aiGenerated: "FALSE", aiEstimatedFields: "", confirmedFields: "", createdAt: "2026-07-01T00:00:00Z",
-    updatedAt: "2026-07-01T00:00:00Z", completedAt: "", archivedAt: "", version: "1",
-  };
-  const merged = { ...base, ...overrides };
-  return HEADER.map((h) => String(merged[h]));
-}
+const SS = new FakeSpreadsheet();
 
-const at = (sheet, id) => {
-  const i = sheet.values.findIndex((r) => r[0] === id);
-  if (i < 0) return null;
-  const obj = {};
-  HEADER.forEach((h, c) => (obj[h] = sheet.values[i][c]));
-  return obj;
+global.SpreadsheetApp = { getActiveSpreadsheet: () => SS };
+global.LockService = { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {} }) };
+global.ContentService = {
+  MimeType: { JSON: 'application/json' },
+  createTextOutput: (s) => ({ _s: s, setMimeType() { return this; }, getContent() { return this._s; } })
+};
+global.Utilities = {
+  formatDate: (d) => new Date(d).toISOString().replace(/\.\d{3}Z$/, '+09:00')
+};
+const logs = [];
+global.Logger = { log: (m) => logs.push(String(m)) };
+
+// ---- 読み込み ----
+// gas/ は .gitignore 対象（Vaultのパスを含む手元専用フォルダ）。
+// クローンしただけの環境には無いので、その場合はスキップして落とさない。
+const path_ = require("path");
+const GS = process.argv[2] || path_.join(__dirname, "..", "gas", "ai_todo_sync.gs");
+const PAYLOAD = process.argv[3] || path_.join(__dirname, "..", "gas", "payload_sample.json");
+if (!fs.existsSync(GS) || !fs.existsSync(PAYLOAD)) {
+  console.log("skip: gas/ が無いため GAS のテストを飛ばします");
+  console.log("  " + GS);
+  console.log("  引数で渡すこともできます: node tests/gas.test.js <ai_todo_sync.gs> <payload.json>");
+  console.log("\npass=0 fail=0");
+  process.exit(0);
+}
+const src = fs.readFileSync(GS, "utf8");
+eval(src);
+
+// ---- ヘルパ ----
+const post = (body) => JSON.parse(doPost({ postData: { contents: JSON.stringify(body) } }).getContent());
+const get = (p) => JSON.parse(doGet({ parameter: p }).getContent());
+let pass = 0, fail = 0;
+const check = (label, cond, extra) => {
+  if (cond) { pass++; console.log('  ok   ' + label); }
+  else { fail++; console.log('  FAIL ' + label + (extra !== undefined ? '  -> ' + JSON.stringify(extra) : '')); }
 };
 
-let passed = 0;
-const failures = [];
-const tests = [];
-const test = (name, fn) => tests.push({ name, fn });
+const payload = JSON.parse(fs.readFileSync(PAYLOAD, "utf8"));
+const TOKEN = CFG.TOKEN;
 
-// ================= 認証 =================
+console.log('\n== 1. 認証 ==');
+check('tokenが違えば拒否', post({ token: 'wrong', tasks: [] }).error === 'invalid token');
+check('GETもtokenを見る', get({ token: 'wrong' }).error === 'invalid token');
 
-test("認証: tokenが違えば拒否する", () => {
-  const { api } = load(makeSheet([]));
-  assert.strictEqual(api.isAuthorized("まちがい"), false);
-  assert.strictEqual(api.isAuthorized(api.CFG.TOKEN), true);
-  assert.strictEqual(api.isAuthorized(undefined), false);
-  assert.strictEqual(api.isAuthorized(""), false);
-});
+console.log('\n== 2. 旧シートからの移行 ==');
+// 旧スキーマのtasksシートを用意
+const legacyCols = ['id','title','description','priority','weight','deadline','urgency','status',
+  'decisionStatus','sources','aiExtracted','aiGenerated','aiEstimatedFields','confirmedFields',
+  'createdAt','updatedAt','completedAt','archivedAt','version'];
+const legacy = SS.insertSheet('tasks');
+legacy.getRange(1,1,1,legacyCols.length).setValues([legacyCols]);
+legacy.getRange(2,1,3,legacyCols.length).setValues([
+  ['activity-20260726-001','旧・確定済みタスク','メモ','high','heavy','2026-08-01T23:59:59+09:00','high',
+   'todo','confirmed','["50_活動/59.md"]',true,false,'["urgency"]','["priority"]',
+   '2026-07-26T10:00:00+09:00','2026-07-26T10:00:00+09:00','','',3],
+  ['activity-20260726-009','旧・完了済みタスク','','medium','light','','',
+   'done','confirmed','[]',true,false,'[]','[]',
+   '2026-07-26T10:00:00+09:00','2026-07-27T10:00:00+09:00','2026-07-27T10:00:00+09:00','',2],
+  ['activity-20260726-010','旧・アーカイブ済み','','low','light','','',
+   'archived','proposed','[]',true,true,'[]','[]',
+   '2026-07-26T10:00:00+09:00','2026-07-27T10:00:00+09:00','','2026-07-27T11:00:00+09:00',1],
+]);
+migrateLegacySheet();
+const tasksSheet = SS.getSheetByName('Tasks');
+const exactNames = () => SS.getSheets().map(s => s.getName());
+check('tasksシートがTasksへリネームされた',
+      exactNames().includes('Tasks') && !exactNames().includes('tasks'), exactNames());
+check('Projectsシートが作られた', !!SS.getSheetByName('Projects'));
+check('見出しが新列定義と一致', JSON.stringify(tasksSheet.data[0]) === JSON.stringify(TASK_COLUMNS),
+      tasksSheet.data[0]);
+const afterMigrate = readSheet_(tasksSheet, TASK_COLUMNS);
+const m1 = afterMigrate.find(r => r.task_id === 'activity-20260726-001');
+check('id -> task_id', !!m1);
+check('weight(heavy) -> effort', m1.effort === 'heavy', m1.effort);
+check('decisionStatus -> confirmation', m1.confirmation === 'confirmed', m1.confirmation);
+check('status todo -> 未着手', m1.status === '未着手', m1.status);
+check('confirmedFieldsが新列名へ読み替え(priority)', JSON.stringify(m1.confirmedFields) === '["priority"]',
+      m1.confirmedFields);
+check('sources配列が保持', JSON.stringify(m1.sources) === '["50_活動/59.md"]', m1.sources);
+check('versionが保持', Number(m1.version) === 3, m1.version);
+const m2 = afterMigrate.find(r => r.task_id === 'activity-20260726-009');
+check('status done -> 完了', m2.status === '完了', m2.status);
+check('completedAtが保持', String(m2.completedAt).indexOf('2026-07-27') === 0, m2.completedAt);
+const m3 = afterMigrate.find(r => r.task_id === 'activity-20260726-010');
+check('status archived -> キャンセル', m3.status === 'キャンセル', m3.status);
+check('archivedAtが保持', String(m3.archivedAt).indexOf('2026-07-27') === 0, m3.archivedAt);
+// 実物の getSheetByName は大小を区別しないため、tasks/Tasks が同一シートを指す。
+// 名前ではなく見出し行で移行済みを判定できているか。
+let reran = null;
+try { migrateLegacySheet(); } catch (e) { reran = String(e.message || e); }
+check('2回目の移行がエラーにならない', reran === null, reran);
+check('2回目で行が消えない', readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).length === 3,
+      readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).length);
+check('シートが増殖しない', SS.getSheets().filter(s => /^tasks$/i.test(s.getName())).length === 1,
+      SS.getSheets().map(s => s.getName()));
 
-test("認証: tokenが無いGETは中身を返さない", () => {
-  const { api } = load(makeSheet([row({ id: "t1", title: "秘密のタスク" })]));
-  const res = JSON.parse(api.doGet({ parameter: {} }).__text);
-  assert.strictEqual(res.ok, false);
-  assert.strictEqual(res.error, "unauthorized");
-  assert.ok(!JSON.stringify(res).includes("秘密のタスク"));
-});
+console.log('\n== 3. dryRunは書き込まない ==');
+const rowsBefore = SS.getSheetByName('Tasks').data.length;
+const dry = post({ token: TOKEN, dryRun: true, projects: payload.projects, tasks: payload.tasks });
+check('ok', dry.ok === true, dry);
+check('dryRunフラグが返る', dry.dryRun === true);
+check('シート行数が変わらない', SS.getSheetByName('Tasks').data.length === rowsBefore);
+check('created件数が出る', dry.tasks.created > 0, dry.tasks);
+check('token未指定なら既定でdryRun',
+      post({ token: TOKEN, tasks: [] }).dryRun === true);
 
-// ================= 読み取り =================
+console.log('\n== 4. 本反映 ==');
+const live = post({ token: TOKEN, dryRun: false, projects: payload.projects, tasks: payload.tasks });
+check('projects created = ' + live.projects.created, live.projects.created === payload.projects.length,
+      live.projects);
+check('tasks created = ' + live.tasks.created,
+      live.tasks.created === payload.tasks.filter(t => !['activity-20260726-001','activity-20260726-009','activity-20260726-010'].includes(t.task_id)).length,
+      live.tasks);
+const stored = readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS);
+check('全件がシートに載る', stored.length >= payload.tasks.length, stored.length);
+const sample = stored.find(r => r.task_id === 'task-ai-todo-sync-schema-001');
+const sampleIn = payload.tasks.find(t => t.task_id === 'task-ai-todo-sync-schema-001');
+check('日本語statusがそのまま入る（todo/doneへ変換しない）',
+      sample.status === sampleIn.status && /^(未着手|進行中|保留|完了|キャンセル)$/.test(sample.status),
+      [sampleIn.status, sample.status]);
+check('blockedByが配列で戻る', Array.isArray(sample.blockedBy), sample.blockedBy);
+check('aiEstimatedFieldsが配列で戻る', Array.isArray(sample.aiEstimatedFields), sample.aiEstimatedFields);
+check('createdAt/versionが付く', !!sample.createdAt && Number(sample.version) === 1, [sample.createdAt, sample.version]);
+const multi = stored.find(r => r.blockedBy.length > 1);
+check('カンマ区切りblocked_byが複数要素に', !!multi, multi && multi.blockedBy);
 
-test("読み取り: 配列列と真偽値列を型どおりに戻す", () => {
-  const sheet = makeSheet([
-    row({ id: "t1", title: "A", sources: '["50_活動/x.md","60_ログ/y.md"]', aiExtracted: "TRUE",
-          aiEstimatedFields: '["urgency"]', confirmedFields: '["priority"]', version: "3" }),
-  ]);
-  const { api } = load(sheet);
-  const t = api.readAll(api.getSheet()).tasks[0];
-  assert.deepStrictEqual(Array.from(t.sources), ["50_活動/x.md", "60_ログ/y.md"]);
-  assert.strictEqual(t.aiExtracted, true);
-  assert.strictEqual(t.aiGenerated, false);
-  assert.deepStrictEqual(Array.from(t.confirmedFields), ["priority"]);
-  assert.strictEqual(t.version, 3);
-});
+console.log('\n== 5. 冪等性 ==');
+const again = post({ token: TOKEN, dryRun: false, projects: payload.projects, tasks: payload.tasks });
+check('2回目は全件unchanged', again.tasks.unchanged === payload.tasks.length && again.tasks.updated === 0,
+      again.tasks);
+check('projectsも全件unchanged', again.projects.unchanged === payload.projects.length, again.projects);
 
-test("読み取り: 空行を読み飛ばす", () => {
-  const sheet = makeSheet([new Array(HEADER.length).fill(""), row({ id: "t1", title: "A" })]);
-  const { api } = load(sheet);
-  assert.strictEqual(api.readAll(api.getSheet()).tasks.length, 1);
-});
+console.log('\n== 6. 保護 ==');
+// confirmedFields に priority が入っている行を狙う
+const target = payload.tasks.find(t => t.task_id === 'activity-20260726-001');
+const before = readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).find(r => r.task_id === 'activity-20260726-001');
+const r6 = post({ token: TOKEN, dryRun: false, tasks: [
+  Object.assign({}, target || {}, { task_id: 'activity-20260726-001', priority: 'low', title: '変更後タイトル' })
+]});
+const after = readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).find(r => r.task_id === 'activity-20260726-001');
+check('confirmedFieldsのpriorityは据え置き', after.priority === before.priority, [before.priority, after.priority]);
+check('保護外のtitleは更新される', after.title === '変更後タイトル', after.title);
+check('protectedが報告される', JSON.stringify(r6.details.tasks[0].protected || []).includes('priority'),
+      r6.details.tasks[0]);
+check('versionが+1', Number(after.version) === Number(before.version) + 1, [before.version, after.version]);
 
-test("読み取り: 壊れた配列列でも落ちない", () => {
-  const sheet = makeSheet([row({ id: "t1", title: "A", sources: "これはJSONではない" })]);
-  const { api } = load(sheet);
-  assert.deepStrictEqual(Array.from(api.readAll(api.getSheet()).tasks[0].sources), ["これはJSONではない"]);
-});
+// 完了行を未着手へ戻そうとする
+const doneBefore = readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).find(r => r.task_id === 'activity-20260726-009');
+post({ token: TOKEN, dryRun: false, tasks: [{ task_id: 'activity-20260726-009', status: '未着手', title: 'X' }]});
+const doneAfter = readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).find(r => r.task_id === 'activity-20260726-009');
+check('完了行は未着手へ戻らない', doneAfter.status === '完了', doneAfter.status);
+check('completedAtが消えない', doneAfter.completedAt === doneBefore.completedAt);
+// アーカイブ済み行
+post({ token: TOKEN, dryRun: false, tasks: [{ task_id: 'activity-20260726-010', status: '進行中' }]});
+const archAfter = readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).find(r => r.task_id === 'activity-20260726-010');
+check('アーカイブ済み行も戻らない', archAfter.status === 'キャンセル', archAfter.status);
 
-// ================= 新規追加 =================
+console.log('\n== 7. 完了への遷移 ==');
+post({ token: TOKEN, dryRun: false, tasks: [{ task_id: 'task-ai-todo-sync-schema-001', status: '完了' }]});
+const closed = readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).find(r => r.task_id === 'task-ai-todo-sync-schema-001');
+check('status=完了になる', closed.status === '完了', closed.status);
+check('completedAtが自動で入る', !!closed.completedAt, closed.completedAt);
 
-test("新規: 行が増え、createdAt と version が設定される", () => {
-  const sheet = makeSheet([]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", title: "新しいタスク", priority: "high", sources: ["50_活動/x.md"] }], false);
+console.log('\n== 8. 異常系 ==');
+const bad = post({ token: TOKEN, dryRun: true, tasks: [
+  { title: 'IDなし' },
+  { task_id: 'dup-1', title: 'A' },
+  { task_id: 'dup-1', title: 'B' }
+]});
+check('task_id空はerror', bad.tasks.errors >= 1, bad.tasks);
+check('ペイロード内重複もerror', bad.details.tasks.some(d => d.reason === 'ペイロード内でIDが重複'), bad.details.tasks);
+check('壊れたJSONを弾く',
+      JSON.parse(doPost({ postData: { contents: '{oops' } }).getContent()).error === 'invalid JSON body');
+const orphan = post({ token: TOKEN, dryRun: true, tasks: [{ task_id: 'x-1', project_id: 'project-存在しない' }]});
+check('存在しないproject_idを警告', orphan.warnings.orphanProjectRefs.length === 1, orphan.warnings);
+const payloadIds = new Set(payload.tasks.map(t => t.task_id));
+const expectedOrphans = ['activity-20260726-001','activity-20260726-009','activity-20260726-010']
+  .filter(id => !payloadIds.has(id));
+check('ペイロードに無い行を報告(削除しない)',
+      again.warnings.notInPayload.tasks.length === expectedOrphans.length &&
+      expectedOrphans.every(id => again.warnings.notInPayload.tasks.includes(id)),
+      again.warnings.notInPayload.tasks);
+check('ペイロードに無い行が消えていない',
+      expectedOrphans.every(id => readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS)
+        .some(r => r.task_id === id)));
 
-  assert.strictEqual(r.summary.created, 1);
-  const saved = at(sheet, "a1");
-  assert.strictEqual(saved.title, "新しいタスク");
-  assert.strictEqual(saved.priority, "high");
-  assert.strictEqual(saved.version, "1");
-  assert.strictEqual(saved.sources, '["50_活動/x.md"]');
-  assert.ok(saved.createdAt);
-});
+console.log('\n== 9. GET ==');
+const g = get({ token: TOKEN });
+check('ok', g.ok === true);
+check('projects/tasksの両方が返る', Array.isArray(g.projects) && Array.isArray(g.tasks));
+check('件数が一致', g.counts.tasks === readSheet_(SS.getSheetByName('Tasks'), TASK_COLUMNS).length);
 
-test("新規: confirmedFields は空で作る（本人はまだ何も確認していない）", () => {
-  const sheet = makeSheet([]);
-  const { api } = load(sheet);
-  api.upsert([{ id: "a1", title: "A", confirmedFields: ["priority", "title"] }], false);
-  assert.strictEqual(at(sheet, "a1").confirmedFields, "", "送信された confirmedFields は無視する");
-});
+console.log('\n== 10. 見出し行の不一致を検知 ==');
+SS.getSheetByName('Projects').data[0][2] = 'ずれた見出し';
+const broken = post({ token: TOKEN, dryRun: true, projects: payload.projects });
+check('見出しずれでエラーを返す', broken.ok === false && /見出し行/.test(broken.error), broken.error);
 
-test("新規: 複数件をまとめて追加できる", () => {
-  const sheet = makeSheet([]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", title: "A" }, { id: "a2", title: "B" }, { id: "a3", title: "C" }], false);
-  assert.strictEqual(r.summary.created, 3);
-  assert.ok(at(sheet, "a3"));
-});
+console.log('\n== 11. testDryRunSample ==');
+SS.getSheetByName('Projects').data[0][2] = 'name';
+logs.length = 0;
+testDryRunSample();
+check('サンプル実行が成功', /"ok":true/.test(logs.join('')), logs.join('').slice(0, 200));
 
-// ================= 更新と保護 =================
-
-test("更新: 変わった列だけ書き換え、version が+1される", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", priority: "low", version: "4" })]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", title: "A", priority: "high" }], false);
-
-  assert.strictEqual(r.summary.updated, 1);
-  assert.deepStrictEqual(Array.from(r.updated[0].changed), ["priority"]);
-  const saved = at(sheet, "a1");
-  assert.strictEqual(saved.priority, "high");
-  assert.strictEqual(saved.version, "5");
-});
-
-test("更新: 本人が確定した列は上書きしない（受け入れ条件11）", () => {
-  const sheet = makeSheet([
-    row({ id: "a1", title: "A", priority: "high", weight: "light", confirmedFields: '["priority"]', version: "2" }),
-  ]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", priority: "low", weight: "heavy" }], false);
-
-  const saved = at(sheet, "a1");
-  assert.strictEqual(saved.priority, "high", "確定済みの優先順位は守られる");
-  assert.strictEqual(saved.weight, "heavy", "確定していない重さは更新される");
-  assert.deepStrictEqual(Array.from(r.updated[0].protectedColumns), ["priority"], "据え置いた列を報告する");
-});
-
-test("更新: id / createdAt / version を送っても書き換わらない", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", createdAt: "2026-07-01T00:00:00Z", version: "2" })]);
-  const { api } = load(sheet);
-  api.upsert([{ id: "a1", title: "B", createdAt: "1999-01-01T00:00:00Z", version: 99 }], false);
-
-  const saved = at(sheet, "a1");
-  assert.strictEqual(saved.createdAt, "2026-07-01T00:00:00Z");
-  assert.strictEqual(saved.version, "3", "送信値ではなく+1される");
-  assert.strictEqual(saved.title, "B");
-});
-
-test("更新: 中身が同じなら変更なしとして扱い、versionも動かさない", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", priority: "high", version: "7" })]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", title: "A", priority: "high" }], false);
-
-  assert.strictEqual(r.summary.unchanged, 1);
-  assert.strictEqual(r.summary.updated, 0);
-  assert.strictEqual(at(sheet, "a1").version, "7");
-});
-
-test("更新: 配列列は順序が違っても同じとみなす", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", sources: '["b.md","a.md"]' })]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", sources: ["a.md", "b.md"] }], false);
-  assert.strictEqual(r.summary.unchanged, 1, "並び順だけの違いで更新扱いにしない");
-});
-
-test("更新: 送っていない列は触らない", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", description: "残すメモ", priority: "low" })]);
-  const { api } = load(sheet);
-  api.upsert([{ id: "a1", priority: "high" }], false);
-  assert.strictEqual(at(sheet, "a1").description, "残すメモ");
-});
-
-// ================= 完了・アーカイブの保護 =================
-
-test("保護: 完了済みタスクを未完了へ戻さない（要件4.8）", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", status: "done", completedAt: "2026-07-20T00:00:00Z" })]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", title: "A", status: "todo" }], false);
-
-  assert.strictEqual(r.summary.skipped, 1);
-  assert.match(r.skipped[0].reason, /完了済み/);
-  assert.strictEqual(at(sheet, "a1").status, "done");
-});
-
-test("保護: アーカイブ済みタスクを復活させない（要件4.8）", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", status: "archived", archivedAt: "2026-07-20T00:00:00Z" })]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", title: "A", status: "todo" }], false);
-
-  assert.strictEqual(r.summary.skipped, 1);
-  assert.match(r.skipped[0].reason, /アーカイブ済み/);
-  assert.strictEqual(at(sheet, "a1").status, "archived");
-});
-
-test("状態: todo → done にすると completedAt が入る", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", status: "todo" })]);
-  const { api } = load(sheet);
-  api.upsert([{ id: "a1", status: "done" }], false);
-  const saved = at(sheet, "a1");
-  assert.strictEqual(saved.status, "done");
-  assert.ok(saved.completedAt, "完了日時が記録される");
-});
-
-// ================= dryRun =================
-
-test("dryRun: シートを書き換えずに判定だけ返す", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A", priority: "low" })]);
-  const before = JSON.stringify(sheet.values);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", priority: "high" }, { id: "a2", title: "新規" }], true);
-
-  assert.strictEqual(r.dryRun, true);
-  assert.strictEqual(r.summary.updated, 1);
-  assert.strictEqual(r.summary.created, 1);
-  assert.strictEqual(JSON.stringify(sheet.values), before, "シートは1文字も変わらない");
-});
-
-// ================= エラー =================
-
-test("エラー: id が無い項目はエラーに入れ、他は処理を続ける", () => {
-  const sheet = makeSheet([]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ title: "idなし" }, { id: "a1", title: "正常" }], false);
-
-  assert.strictEqual(r.summary.errors, 1);
-  assert.strictEqual(r.summary.created, 1);
-  assert.match(r.errors[0].reason, /id/);
-  assert.ok(at(sheet, "a1"));
-});
-
-test("エラー: 同じidが1回の送信に複数あれば2件目以降を弾く", () => {
-  const sheet = makeSheet([]);
-  const { api } = load(sheet);
-  const r = api.upsert([{ id: "a1", title: "1つ目" }, { id: "a1", title: "2つ目" }], false);
-
-  assert.strictEqual(r.summary.created, 1);
-  assert.strictEqual(r.summary.errors, 1);
-  assert.strictEqual(at(sheet, "a1").title, "1つ目");
-});
-
-test("エラー: tasks が空なら受け付けない", () => {
-  const { api } = load(makeSheet([]));
-  const res = JSON.parse(
-    api.doPost({ postData: { contents: JSON.stringify({ token: api.CFG.TOKEN, tasks: [] }) } }).__text
-  );
-  assert.strictEqual(res.ok, false);
-});
-
-// ================= 設置確認 =================
-
-test("設置確認: testReadAll が見出しと件数をログに出す", () => {
-  const sheet = makeSheet([row({ id: "a1", title: "A" })]);
-  const { api, logs } = load(sheet);
-  api.testReadAll();
-  assert.ok(logs.some((l) => l.includes("見出し行")));
-  assert.ok(logs.some((l) => l.includes("タスク件数: 1")));
-});
-
-test("設置確認: TOKEN が初期値のままなら警告する", () => {
-  const { api, logs } = load(makeSheet([]));
-  api.testReadAll();
-  assert.ok(logs.some((l) => l.includes("CFG.TOKEN")), "デプロイ前に気づけるようにする");
-});
-
-test("整合: 列の並びがアプリ側（js/sheets.js）と一致している", () => {
-  const appSource = fs.readFileSync(path.join(root, "js/sheets.js"), "utf8");
-  const block = appSource.match(/const SHEET_FIELDS = \[([\s\S]*?)\];/);
-  assert.ok(block, "js/sheets.js の SHEET_FIELDS が見つからない");
-  const fields = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-  assert.deepStrictEqual(fields, HEADER, "アプリとGASで列が食い違うと別タスク扱いになる");
-});
-
-// ================= sync.sh =================
-
-// 2026-07-27に踏んだ不具合の再発防止。
-// `echo "$X" | python3 - <<'PY'` と書くと、ヒアドキュメントがパイプを上書きして
-// python が標準入力からプログラムを読み切ってしまい、sys.stdin.read() が空になる。
-// 応答が届いていても「応答をJSONとして読めませんでした」に化けるので、必ず引数で渡す。
-test("sync.sh: 応答を標準入力ではなくファイル引数で python に渡している", () => {
-  const sh = fs.readFileSync(path.join(root, "gas/sync.sh"), "utf8");
-  assert.ok(
-    !/\|\s*python3\s+-\s*<<'?PY/.test(sh),
-    "ヒアドキュメントとパイプの併用は応答を読み落とす"
-  );
-  assert.ok(
-    !/sys\.stdin\.read\(\)/.test(sh),
-    "ヒアドキュメントでプログラムを渡す間は sys.stdin は使えない"
-  );
-  assert.ok(
-    /python3\s+-\s+"\$RESPONSE"/.test(sh),
-    "応答ファイルのパスを argv で渡すこと"
-  );
-});
-
-// 同じく2026-07-27。-L と -X POST の併用でリダイレクト先へPOSTが飛び、405になった。
-test("sync.sh: curl に -X POST を付けていない", () => {
-  const sh = fs.readFileSync(path.join(root, "gas/sync.sh"), "utf8");
-  const curlLines = sh.split("\n").filter((l) => /^\s*[A-Z_]*=?"?\$?\(?curl |curl /.test(l));
-  assert.ok(curlLines.length > 0, "curl の呼び出しが見当たらない");
-  curlLines.forEach((line) => {
-    assert.ok(
-      !/-X\s+POST/.test(line),
-      "-X POST はリダイレクト先にもPOSTを強制し405になる。-d だけで足りる"
-    );
-  });
-  assert.ok(/curl\s+-sL/.test(sh), "Apps Script のリダイレクトを追うので -L は必要");
-  assert.ok(/-d\s+@"\$BODY"/.test(sh), "-d でボディを渡せば1回目は自動でPOSTになる");
-});
-
-test("sync.sh: 一時ファイルを後始末している", () => {
-  const sh = fs.readFileSync(path.join(root, "gas/sync.sh"), "utf8");
-  const traps = [...sh.matchAll(/trap\s+'rm -f ([^']*)'\s+EXIT/g)].map((m) => m[1]);
-  assert.ok(traps.length > 0, "mktemp した一時ファイルに trap が要る");
-  assert.ok(
-    traps[traps.length - 1].includes('"$BODY"') && traps[traps.length - 1].includes('"$RESPONSE"'),
-    "最後の trap が両方の一時ファイルを消すこと（trap は上書きされる）"
-  );
-});
-
-// ================= 実行 =================
-
-tests.forEach(({ name, fn }) => {
-  try {
-    fn();
-    passed += 1;
-  } catch (err) {
-    failures.push({ name, err });
-  }
-});
-
-console.log(`\n通過: ${passed} / ${passed + failures.length}`);
-if (failures.length > 0) {
-  console.log(`\n失敗: ${failures.length}件`);
-  failures.forEach((f) => {
-    console.log(`\n  ✗ ${f.name}`);
-    console.log(`    ${String(f.err.message).split("\n").slice(0, 3).join("\n    ")}`);
-  });
-  process.exit(1);
-}
-console.log("すべて通過しました。\n");
+console.log('\n----------------------------------------');
+console.log(`pass=${pass} fail=${fail}`);
+process.exit(fail ? 1 : 0);
