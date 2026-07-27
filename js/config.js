@@ -49,6 +49,18 @@ const APP_CONFIG = {
       // false にすると毎回フル同意画面に戻る。共用端末で使うときはそちら。
       rememberConsent: true,
       consentStorageKey: "aiTodo.googleConsented",
+
+      // 認可に使うアカウントのメールアドレス。
+      // prompt を空にしても飛ばせるのは権限確認までで、ブラウザに複数の
+      // Googleアカウントがログインしていると選択画面が残る。ここが埋まっていると
+      // そのアカウントで直接認可しにいくので、選択画面も出なくなる。
+      //
+      // リポジトリは公開なので、ここには書かない。初回の接続時にアプリが尋ね、
+      // 入力された値はその端末の localStorage にだけ置く。端末ごとに1回入れる。
+      // （どうしても全端末で共通にしたければ、ここに直接書いてもよい。
+      //   秘密情報ではないが、公開リポジトリに載ることになる）
+      accountHint: "",
+      accountHintStorageKey: "aiTodo.googleAccountHint",
     },
     apiKey: "",
   },

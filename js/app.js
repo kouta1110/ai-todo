@@ -101,6 +101,25 @@ function renderAuthButtons() {
   const isOauth = store.provider.key === "oauth";
   $("#btn-connect").classList.toggle("hidden", !needsConnection());
   $("#btn-disconnect").classList.toggle("hidden", !(isOauth && GoogleAuth.isSignedIn()));
+
+  // アカウントを覚えていない間だけ入力欄を出す。一度入れたら引っ込む。
+  const setup = $("#account-setup");
+  if (setup) {
+    const needsHint = needsConnection() && !GoogleAuth.getAccountHint(APP_CONFIG);
+    setup.classList.toggle("hidden", !needsHint);
+  }
+}
+
+// 保存しただけで接続はしない。ここで続けて接続へ行くと、本人の操作から
+// 離れたとみなされてポップアップが塞がれることがある。
+function handleSaveAccountHint() {
+  const input = $("#account-hint");
+  const value = GoogleAuth.setAccountHint(APP_CONFIG, input.value);
+  input.value = "";
+  setSync("idle", value
+    ? `${value} を覚えました。「Googleに接続」を押してください`
+    : "アカウントの指定を消しました");
+  render();
 }
 
 async function handleConnect() {
@@ -117,9 +136,11 @@ async function handleConnect() {
   }
 }
 
+// 覚えたアカウントもここで捨てる。別のアカウントに切り替える手段がこれしかない。
 function handleDisconnect() {
-  GoogleAuth.disconnect();
-  setSync("idle", "Googleとの接続を切りました");
+  GoogleAuth.disconnect(APP_CONFIG);
+  GoogleAuth.setAccountHint(APP_CONFIG, "");
+  setSync("idle", "Googleとの接続を切りました（アカウントの指定も消しました）");
   render();
 }
 
@@ -425,6 +446,10 @@ function initApp() {
   $("#btn-sync").addEventListener("click", handleSync);
   $("#btn-connect").addEventListener("click", handleConnect);
   $("#btn-disconnect").addEventListener("click", handleDisconnect);
+  $("#btn-save-hint").addEventListener("click", handleSaveAccountHint);
+  $("#account-hint").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); handleSaveAccountHint(); }
+  });
 
   // 未保存のまま離脱しようとしたら警告する（要件4.9 / 受け入れ条件14）
   if (APP_CONFIG.behavior.warnOnUnsavedExit) {

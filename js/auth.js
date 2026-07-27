@@ -34,6 +34,26 @@ function readFlag(key) {
   }
 }
 
+function readText(key) {
+  try {
+    const s = storage();
+    return (s && s.getItem(key)) || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+function writeText(key, value) {
+  try {
+    const s = storage();
+    if (!s) return;
+    if (value) s.setItem(key, value);
+    else s.removeItem(key);
+  } catch (err) {
+    /* 覚えられないだけなので続行する */
+  }
+}
+
 function writeFlag(key, value) {
   try {
     const s = storage();
@@ -75,17 +95,49 @@ const GoogleAuth = {
     return this.scriptPromise;
   },
 
+  // 認可に使うアカウント。端末に入れた値を優先し、無ければ設定の既定を使う。
+  // 公開リポジトリに載せたくないので、既定は空にして端末側に持たせている。
+  getAccountHint(config = APP_CONFIG) {
+    const o = config.sheets.oauth || {};
+    return (o.accountHintStorageKey && readText(o.accountHintStorageKey)) || o.accountHint || "";
+  },
+
+  // アカウントを変えたら、作り置きのクライアントは古い hint を握ったままなので捨てる。
+  // 別のアカウントに対する同意は取れていないので、同意済みの覚えも捨てる。
+  setAccountHint(config = APP_CONFIG, value = "") {
+    const o = config.sheets.oauth || {};
+    const next = String(value || "").trim();
+    if (next === this.getAccountHint(config)) return next;
+    if (o.accountHintStorageKey) writeText(o.accountHintStorageKey, next);
+    this.tokenClient = null;
+    this.rememberConsent(config, false);
+    return next;
+  },
+
+  // initTokenClient に渡す設定。hint を入れると、複数のGoogleアカウントに
+  // ログインしているブラウザでもアカウント選択画面が出なくなる。
+  // （prompt を空にして飛ばせるのは権限確認までで、選択画面は別枠）
+  tokenClientOptions(config = APP_CONFIG) {
+    const o = config.sheets.oauth || {};
+    const options = {
+      client_id: o.clientId,
+      scope: o.scope,
+      callback: () => {}, // 実際の受け取りは connect() で差し替える
+    };
+    const hint = this.getAccountHint(config);
+    if (hint) options.hint = hint;
+    return options;
+  },
+
   async ensureClient(config = APP_CONFIG) {
     if (this.tokenClient) return this.tokenClient;
     if (!this.isConfigured(config)) {
       throw new Error("クライアントIDが未設定です（js/config.js の sheets.oauth.clientId）");
     }
     await this.loadScript();
-    this.tokenClient = window.google.accounts.oauth2.initTokenClient({
-      client_id: config.sheets.oauth.clientId,
-      scope: config.sheets.oauth.scope,
-      callback: () => {}, // 実際の受け取りは connect() で差し替える
-    });
+    this.tokenClient = window.google.accounts.oauth2.initTokenClient(
+      this.tokenClientOptions(config)
+    );
     return this.tokenClient;
   },
 

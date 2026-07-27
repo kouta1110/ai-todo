@@ -135,6 +135,47 @@ h1 {
   font-size: 0.85rem;
 }
 
+/* ---------- 使うGoogleアカウントの指定 ---------- */
+/* 初回だけ出る。警告ではないので朱は使わず、灰色の面で控えめに置く。 */
+
+.account-setup {
+  margin-top: var(--gap-2);
+  padding: var(--gap-3);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+}
+.account-setup h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.account-setup-note {
+  margin: var(--gap) 0 var(--gap-2);
+  font-size: 0.8rem;
+  color: var(--ink-2);
+}
+.account-setup-row {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: center;
+}
+.account-setup-row input { flex: 1 1 auto; min-width: 0; }
+.account-setup-row button { flex: 0 0 auto; }
+
+/* 読み上げには残すが、目には見せない */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* ---------- 画面切替 ---------- */
 
 .screen { display: none; }
@@ -306,7 +347,7 @@ h1 {
   margin-bottom: var(--gap);
 }
 
-input[type="text"], input[type="datetime-local"], textarea, select {
+input[type="text"], input[type="email"], input[type="datetime-local"], textarea, select {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--rule-strong);

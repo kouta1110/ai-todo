@@ -423,6 +423,45 @@ test("認証: rememberConsent を false にすると毎回同意画面に戻る"
   });
 });
 
+test("認証: アカウントを覚えていなければ hint を渡さない", () => {
+  sandbox.localStorage.clear();
+  assert.ok(!("hint" in GoogleAuth.tokenClientOptions(APP_CONFIG)), "空なら渡さない（選択画面が出る）");
+});
+
+test("認証: 端末に覚えたアカウントを hint として渡す", () => {
+  sandbox.localStorage.clear();
+  GoogleAuth.setAccountHint(APP_CONFIG, "  me@example.com  ");
+  assert.strictEqual(GoogleAuth.getAccountHint(APP_CONFIG), "me@example.com", "前後の空白は落とす");
+  assert.strictEqual(GoogleAuth.tokenClientOptions(APP_CONFIG).hint, "me@example.com");
+  sandbox.localStorage.clear();
+});
+
+test("認証: アカウントは公開する設定ファイルではなく端末側に置く", () => {
+  assert.strictEqual(APP_CONFIG.sheets.oauth.accountHint, "",
+    "config.js は公開されるのでアドレスを書かない");
+});
+
+test("認証: アカウントを変えたら、作り置きのクライアントと同意の覚えを捨てる", () => {
+  sandbox.localStorage.clear();
+  GoogleAuth.setAccountHint(APP_CONFIG, "first@example.com");
+  GoogleAuth.rememberConsent(APP_CONFIG, true);
+  GoogleAuth.tokenClient = { dummy: true };
+
+  GoogleAuth.setAccountHint(APP_CONFIG, "second@example.com");
+  assert.strictEqual(GoogleAuth.tokenClient, null, "古い hint を握ったクライアントを使い回さない");
+  assert.strictEqual(GoogleAuth.hasConsented(APP_CONFIG), false, "別アカウントの同意は取れていない");
+  sandbox.localStorage.clear();
+});
+
+test("認証: 同じアカウントを入れ直しても、同意の覚えは消さない", () => {
+  sandbox.localStorage.clear();
+  GoogleAuth.setAccountHint(APP_CONFIG, "same@example.com");
+  GoogleAuth.rememberConsent(APP_CONFIG, true);
+  GoogleAuth.setAccountHint(APP_CONFIG, "same@example.com");
+  assert.strictEqual(GoogleAuth.hasConsented(APP_CONFIG), true);
+  sandbox.localStorage.clear();
+});
+
 test("認証: アクセストークンは端末に保存しない", async () => {
   await withAuth("ok", async () => {
     await GoogleAuth.connect(APP_CONFIG);

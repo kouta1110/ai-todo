@@ -37,6 +37,25 @@
 
     <p id="notice" class="notice hidden" role="alert"></p>
 
+    <!--
+      初回だけ出る。認可に使うGoogleアカウントをこの端末に覚えさせる。
+      入れておくとアカウント選択画面が出なくなる。公開リポジトリに
+      アドレスを置きたくないので、設定ファイルではなく端末側に持たせている。
+    -->
+    <section id="account-setup" class="account-setup hidden" aria-labelledby="account-setup-title">
+      <h2 id="account-setup-title">使うGoogleアカウント</h2>
+      <p class="account-setup-note">
+        この端末にだけ保存します。入れておくと、接続のたびに出るアカウント選択画面を省けます。
+        空のままでも接続はできます。
+      </p>
+      <div class="account-setup-row">
+        <label class="visually-hidden" for="account-hint">メールアドレス</label>
+        <input id="account-hint" type="email" inputmode="email" autocomplete="email"
+               spellcheck="false" placeholder="you@example.com">
+        <button id="btn-save-hint" class="ghost" type="button">保存</button>
+      </div>
+    </section>
+
     <main>
       <!-- ============ メイン画面（要件5.1） ============ -->
       <section id="view-list" class="screen active">

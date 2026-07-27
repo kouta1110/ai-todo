@@ -459,6 +459,59 @@ test("接続: 未接続なら「Googleに接続」ボタンが出て、自動で
   assert.match(text(ctx.doc, "#notice"), /Googleに接続すると/);
 });
 
+test("アカウント指定: 覚えていなければ入力欄を出す", async () => {
+  const ctx = boot(new Map(), { authMode: "oauth", clientId: "dummy.apps.googleusercontent.com" });
+  await settle();
+  assert.ok(!$(ctx.doc, "#account-setup").classList.contains("hidden"),
+    "アカウント選択画面を省くための入力欄が出る");
+});
+
+test("アカウント指定: 保存すると入力欄が引っ込み、hint として渡される", async () => {
+  const ctx = boot(new Map(), { authMode: "oauth", clientId: "dummy.apps.googleusercontent.com" });
+  await settle();
+
+  $(ctx.doc, "#account-hint").value = "me@example.com";
+  click($(ctx.doc, "#btn-save-hint"));
+  await settle();
+
+  assert.ok($(ctx.doc, "#account-setup").classList.contains("hidden"), "一度入れたら出さない");
+  assert.match(text(ctx.doc, "#notice"), /me@example\.com/);
+  assert.strictEqual(
+    ctx.app.auth.tokenClientOptions(ctx.app.APP_CONFIG).hint, "me@example.com");
+});
+
+test("アカウント指定: 保存だけして接続はしない（ポップアップが塞がれるため）", async () => {
+  const ctx = boot(new Map(), { authMode: "oauth", clientId: "dummy.apps.googleusercontent.com" });
+  await settle();
+  const client = stubGoogle(ctx.window);
+  let asked = 0;
+  client.requestAccessToken = () => { asked += 1; };
+
+  $(ctx.doc, "#account-hint").value = "me@example.com";
+  click($(ctx.doc, "#btn-save-hint"));
+  await settle();
+
+  assert.strictEqual(asked, 0, "保存の流れで勝手に認可へ行かない");
+  assert.ok(!$(ctx.doc, "#btn-connect").classList.contains("hidden"), "接続ボタンは出したまま");
+});
+
+test("アカウント指定: 端末に残るのはアドレスだけで、トークンは保存しない", async () => {
+  const state = new Map();
+  const ctx = boot(state, { authMode: "oauth", clientId: "dummy.apps.googleusercontent.com" });
+  await settle();
+  stubGoogle(ctx.window, { access_token: "ya29-secret-token", expires_in: 3600 });
+  stubSheetsApi(ctx.window);
+
+  $(ctx.doc, "#account-hint").value = "me@example.com";
+  click($(ctx.doc, "#btn-save-hint"));
+  click($(ctx.doc, "#btn-connect"));
+  await settle();
+
+  const saved = [...state.values()].join(" ");
+  assert.ok(saved.includes("me@example.com"), "アドレスは覚える");
+  assert.ok(!saved.includes("ya29-secret-token"), "トークンは覚えない");
+});
+
 test("接続: 押すとトークンを取得し、シートを読み込む（受け入れ条件3・4）", async () => {
   const ctx = boot(new Map(), { authMode: "oauth", clientId: "dummy.apps.googleusercontent.com" });
   await settle();
