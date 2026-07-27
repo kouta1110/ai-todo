@@ -92,6 +92,59 @@ function renderSyncState() {
   showNotice(messages.join(" / "));
 }
 
+// ---- 起動時のローダー ----
+
+function dismissSplash(splash, fadeMs) {
+  if (!splash || splash.dataset.leaving === "1") return;
+  splash.dataset.leaving = "1";
+  splash.classList.add("is-leaving");
+  window.setTimeout(() => splash.remove(), fadeMs + 60);
+}
+
+// 再生が終わったら消す。自動再生を拒否する端末や、動画を再生できない環境も
+// あるので、失敗したときと上限時間の両方で必ず消えるようにしておく。
+function setupSplash() {
+  const splash = document.getElementById("splash");
+  if (!splash) return;
+
+  const cfg = (APP_CONFIG.display && APP_CONFIG.display.splash) || {};
+  if (cfg.enabled === false) {
+    splash.remove();
+    return;
+  }
+  // 0 を「指定なし」と取り違えないよう、null/undefined のときだけ既定値にする。
+  const ms = (value, fallback) => (value == null ? fallback : Number(value));
+  const fadeMs = ms(cfg.fadeMs, 320);
+  const minMs = ms(cfg.minMs, 0);
+  const maxMs = ms(cfg.maxMs, 4000);
+  splash.style.setProperty("--splash-fade", `${fadeMs}ms`);
+
+  const startedAt = Date.now();
+  const finish = () => {
+    const rest = Math.max(0, minMs - (Date.now() - startedAt));
+    window.setTimeout(() => dismissSplash(splash, fadeMs), rest);
+  };
+
+  window.setTimeout(() => dismissSplash(splash, fadeMs), maxMs);
+
+  const reduced = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const video = document.getElementById("splash-video");
+  if (reduced || !video) {
+    finish();
+    return;
+  }
+
+  video.addEventListener("ended", finish);
+  video.addEventListener("error", finish);
+  try {
+    const playing = video.play();
+    if (playing && playing.catch) playing.catch(finish);
+  } catch (err) {
+    finish(); // 再生できない環境（テスト用のDOMなど）
+  }
+}
+
 // OAuth接続が必要な状態か（設定が oauth なのに、まだトークンが無い）。
 function needsConnection() {
   return store.provider.key === "oauth" && !GoogleAuth.isSignedIn();
@@ -430,6 +483,7 @@ function render() {
 }
 
 function initApp() {
+  setupSplash();
   fillSelect($("#f-priority"), APP_CONFIG.priorities);
   fillSelect($("#f-weight"), APP_CONFIG.weights);
   fillSelect($("#f-urgency"), APP_CONFIG.urgencies, true);

@@ -19,6 +19,17 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+  <!--
+    起動時のローダー。再生が終わったらJSが外す。
+    JSが動かなくても画面を塞ぎ続けないよう、CSS側でも数秒後に必ず消える。
+    「動きを減らす」設定の端末には、動画ではなく完成状態の静止画を出す。
+  -->
+  <div id="splash" class="splash" role="status" aria-label="読み込み中">
+    <video id="splash-video" class="splash-media" src="media/loader.mp4"
+           muted autoplay playsinline preload="auto" aria-hidden="true"></video>
+  </div>
+
   <div class="app">
 
     <!-- 同期・更新状態（要件5.4） -->

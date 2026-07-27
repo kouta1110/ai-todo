@@ -41,11 +41,17 @@ function boot(store = new Map(), options = {}) {
     },
   });
 
+  // jsdom は動画を再生できず、play() を呼ぶだけで警告を吐く。
+  // 再生の可否そのものは実機でしか確かめられないので、ここでは差し替えておく。
+  window.HTMLMediaElement.prototype.play = function () { return Promise.resolve(); };
+
   if (options.beforeScripts) options.beforeScripts(window);
 
   const override = `
     ;APP_CONFIG.sheets.authMode = ${JSON.stringify(options.authMode || "none")};
-    APP_CONFIG.sheets.oauth.clientId = ${JSON.stringify(options.clientId || "")};`;
+    APP_CONFIG.sheets.oauth.clientId = ${JSON.stringify(options.clientId || "")};
+    APP_CONFIG.display.splash = Object.assign(
+      {}, APP_CONFIG.display.splash, { minMs: 0, fadeMs: 0 }, ${JSON.stringify(options.splash || {})});`;
 
   const source =
     fs.readFileSync(path.join(root, CONFIG_SCRIPT), "utf8") +
@@ -457,6 +463,47 @@ test("接続: 未接続なら「Googleに接続」ボタンが出て、自動で
   assert.ok($(ctx.doc, "#btn-disconnect").classList.contains("hidden"));
   assert.strictEqual(ctx.app.state.lastLoadedAt, null, "接続前に読み込みへ行かない");
   assert.match(text(ctx.doc, "#notice"), /Googleに接続すると/);
+});
+
+// ---- 起動時のローダー ----
+
+test("ローダー: 起動直後は出ていて、アプリの上に重なる", async () => {
+  const ctx = boot(new Map(), { splash: { maxMs: 9999 } });
+  await settle();
+  const splash = $(ctx.doc, "#splash");
+  assert.ok(splash, "ローダーが消えている");
+  assert.ok(!splash.classList.contains("is-leaving"), "まだ消え始めていない");
+});
+
+test("ローダー: 再生が終わったら消える", async () => {
+  const ctx = boot(new Map(), { splash: { maxMs: 9999 } });
+  await settle();
+  const video = $(ctx.doc, "#splash-video");
+  video.dispatchEvent(new ctx.window.Event("ended"));
+  await new Promise((r) => setTimeout(r, 80));
+  assert.strictEqual($(ctx.doc, "#splash"), null, "再生後も残っている");
+});
+
+test("ローダー: 再生できなくても消える（自動再生が拒否される端末がある）", async () => {
+  const ctx = boot(new Map(), { splash: { maxMs: 9999 } });
+  await settle();
+  const video = $(ctx.doc, "#splash-video");
+  video.dispatchEvent(new ctx.window.Event("error"));
+  await new Promise((r) => setTimeout(r, 80));
+  assert.strictEqual($(ctx.doc, "#splash"), null, "失敗したまま画面を塞いでいる");
+});
+
+test("ローダー: 何も起きなくても上限時間で消える", async () => {
+  const ctx = boot(new Map(), { splash: { maxMs: 30 } });
+  await settle();
+  await new Promise((r) => setTimeout(r, 120));
+  assert.strictEqual($(ctx.doc, "#splash"), null, "上限を過ぎても残っている");
+});
+
+test("ローダー: 設定で切れる", async () => {
+  const ctx = boot(new Map(), { splash: { enabled: false } });
+  await settle();
+  assert.strictEqual($(ctx.doc, "#splash"), null, "enabled:false でも出ている");
 });
 
 test("アカウント指定: 覚えていなければ入力欄を出す", async () => {

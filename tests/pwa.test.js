@@ -150,6 +150,38 @@ test("公開前チェック: GASのTOKENが初期値のまま置かれている�
   assert.ok(m[1].startsWith("CHANGE_ME"), "控えのファイルには実際のtokenを書かない");
 });
 
+// ---- 起動時のローダー ----
+
+test("ローダー: 動画と静止画が揃っている", () => {
+  ["media/loader.mp4", "media/loader-still.webp"].forEach((f) => {
+    assert.ok(fs.existsSync(path.join(root, f)), `${f} が無い`);
+  });
+});
+
+// 元は4.5MBのGIFだった。回線の細い端末では、ローダー自体の
+// 読み込み待ちが起動を遅らせるので、軽いままかを機械的に見張る。
+test("ローダー: 起動を遅らせない大きさに収まっている", () => {
+  const total = ["media/loader.mp4", "media/loader-still.webp"]
+    .reduce((sum, f) => sum + fs.statSync(path.join(root, f)).size, 0);
+  assert.ok(total < 400 * 1024, `ローダーが重すぎる: ${Math.round(total / 1024)}KB`);
+});
+
+test("ローダー: 自動再生できる形で置いている", () => {
+  const tag = html.match(/<video[^>]*id="splash-video"[^>]*>/);
+  assert.ok(tag, "splash-video が無い");
+  // iOSは muted と playsinline が無いとインライン自動再生を許さない
+  ["muted", "playsinline", "autoplay"].forEach((attr) => {
+    assert.ok(tag[0].includes(attr), `${attr} が要る（iOSで再生されない）`);
+  });
+});
+
+test("ローダー: JSが動かなくても画面を塞ぎ続けない", () => {
+  const css = fs.readFileSync(path.join(root, "style.css"), "utf8");
+  assert.ok(/@keyframes\s+splash-failsafe/.test(css), "CSS側の保険が要る");
+  assert.ok(/\.splash\s*\{[^}]*animation:\s*splash-failsafe/.test(css),
+    ".splash に保険のアニメーションが当たっていない");
+});
+
 // ---- 公開範囲 ----
 // 2026-07-27 決定: Pages を無料で使うためリポジトリは Public にする。
 // アプリの動作に要らない個人的な内容（氏名入りのVaultパス、要件定義、作業メモ）は
@@ -157,7 +189,7 @@ test("公開前チェック: GASのTOKENが初期値のまま置かれている�
 
 // GitHub に上げるファイル。ここに無いものは公開されない前提。
 const PUBLISHED = ["index.html", "style.css", "manifest.json", "README.md"];
-const PUBLISHED_DIRS = ["icons", "js", "tests"];
+const PUBLISHED_DIRS = ["icons", "js", "tests", "media"];
 
 // 公開対象に出てはいけない記述。
 // アカウント名はホームディレクトリから取る。ここに直接書くと、

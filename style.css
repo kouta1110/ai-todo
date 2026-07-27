@@ -135,6 +135,51 @@ h1 {
   font-size: 0.85rem;
 }
 
+/* ---------- 起動時のローダー ---------- */
+/* 背景色は動画の地色と同じ。読み込みの隙間に別の色が覗かないようにする。 */
+
+.splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #1d2330;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  /* JSが動かないときの保険。6秒後に必ず消える（duration 0s + delay 6s）。 */
+  animation: splash-failsafe 0s linear 6s forwards;
+}
+.splash-media {
+  width: 100%;
+  height: 100%;
+  /* 素材は縦長（9:16）。cover にすると横長の画面でアイコンが切れるので、
+     切らずに収めて、余った部分は上の background で埋める。
+     素材の四隅とほぼ同じ色にしてあるので継ぎ目は目立たない。 */
+  object-fit: contain;
+  display: block;
+}
+.splash.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--splash-fade, 320ms) ease-out;
+}
+@keyframes splash-failsafe {
+  to { opacity: 0; visibility: hidden; }
+}
+
+/* 動きを減らす設定なら、再生せず完成状態の静止画だけを出す */
+@media (prefers-reduced-motion: reduce) {
+  .splash-media { display: none; }
+  .splash {
+    background-image: url("media/loader-still.webp");
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
+    animation-delay: 3s;
+  }
+  .splash.is-leaving { transition-duration: 1ms; }
+}
+
 /* ---------- 使うGoogleアカウントの指定 ---------- */
 /* 初回だけ出る。警告ではないので朱は使わず、灰色の面で控えめに置く。 */
 
