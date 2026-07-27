@@ -38,6 +38,17 @@ const APP_CONFIG = {
     oauth: {
       clientId: "803532163784-cifk2t9kvm4n9vmlihsl3acgt78p07r3.apps.googleusercontent.com",
       scope: "https://www.googleapis.com/auth/spreadsheets",
+
+      // 一度同意したことを端末に覚えておき、2回目以降は同意画面を出さない。
+      // 保存するのは「同意済み」の真偽値だけで、アクセストークンは保存しない
+      // （トークンを保存すると、端末を他人に触られた間シートを読み書きされうる）。
+      //
+      // 「Googleに接続」を押す操作自体は残る。ブラウザがポップアップを塞ぐため、
+      // 本人の操作なしにトークンを取りに行くことはできない。
+      //
+      // false にすると毎回フル同意画面に戻る。共用端末で使うときはそちら。
+      rememberConsent: true,
+      consentStorageKey: "aiTodo.googleConsented",
     },
     apiKey: "",
   },

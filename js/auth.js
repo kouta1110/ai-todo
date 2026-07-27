@@ -17,6 +17,34 @@ function isTokenValid(token, now = Date.now()) {
   return Boolean(token && token.value && token.expiresAt > now);
 }
 
+function storage() {
+  if (typeof window !== "undefined" && window.localStorage) return window.localStorage;
+  if (typeof localStorage !== "undefined") return localStorage;
+  return null;
+}
+
+// localStorage は Safari のプライベートブラウズなどで例外を投げることがある。
+// 覚えられなくても動作は続けられるので、失敗は握りつぶして既定の挙動に戻す。
+function readFlag(key) {
+  try {
+    const s = storage();
+    return Boolean(s) && s.getItem(key) === "1";
+  } catch (err) {
+    return false;
+  }
+}
+
+function writeFlag(key, value) {
+  try {
+    const s = storage();
+    if (!s) return;
+    if (value) s.setItem(key, "1");
+    else s.removeItem(key);
+  } catch (err) {
+    /* 覚えられないだけなので続行する */
+  }
+}
+
 const GoogleAuth = {
   token: null,
   tokenClient: null,
@@ -61,11 +89,45 @@ const GoogleAuth = {
     return this.tokenClient;
   },
 
+  // 以前に同意を済ませているか。メモリ上のトークンはリロードで消えるので、
+  // それだけを見ると毎回「初回」扱いになり、フル同意画面が出てしまう。
+  hasConsented(config = APP_CONFIG) {
+    const o = config.sheets.oauth || {};
+    if (!o.rememberConsent || !o.consentStorageKey) return false;
+    return readFlag(o.consentStorageKey);
+  },
+
+  rememberConsent(config = APP_CONFIG, value = true) {
+    const o = config.sheets.oauth || {};
+    if (!o.rememberConsent || !o.consentStorageKey) return;
+    writeFlag(o.consentStorageKey, value);
+  },
+
   // 同意画面（ポップアップ）を開く。ブラウザに塞がれるため、
   // 必ずボタンのクリックなど本人の操作から呼ぶこと。
+  //
+  // 同意済みなら prompt を空にして、アカウント選択と権限確認を飛ばす。
+  // 取り消されていた場合はここで弾かれるので、覚えを捨ててもう一度押してもらう
+  // （失敗のあと自動でやり直すと、本人の操作から離れてポップアップが塞がれる）。
   async connect(config = APP_CONFIG) {
     const client = await this.ensureClient(config);
-    const firstTime = !this.token;
+    const skipConsent = !this.token && this.hasConsented(config);
+    const silent = Boolean(this.token) || skipConsent;
+
+    try {
+      const value = await this.requestToken(client, silent ? "" : "consent");
+      this.rememberConsent(config, true);
+      return value;
+    } catch (err) {
+      if (skipConsent) {
+        this.rememberConsent(config, false);
+        throw new Error("Googleの許可が切れていました。もう一度「Googleに接続」を押してください");
+      }
+      throw err;
+    }
+  },
+
+  requestToken(client, prompt) {
     return new Promise((resolve, reject) => {
       client.callback = (response) => {
         if (response.error) {
@@ -81,8 +143,7 @@ const GoogleAuth = {
       client.error_callback = (err) => {
         reject(new Error(`Googleへの接続に失敗しました（${err && err.type ? err.type : "不明"}）`));
       };
-      // 2回目以降は同意済みなので確認画面を出さない。
-      client.requestAccessToken({ prompt: firstTime ? "consent" : "" });
+      client.requestAccessToken({ prompt: prompt });
     });
   },
 
@@ -94,11 +155,15 @@ const GoogleAuth = {
     throw new Error("Googleに接続してください（上部の「Googleに接続」ボタン）");
   },
 
-  disconnect() {
+  // 本人が明示的に切るので、許可そのものを取り消して覚えも捨てる。
+  // 次に接続するときは同意画面から始まる。
+  disconnect(config = APP_CONFIG) {
     const value = this.token && this.token.value;
     this.token = null;
-    if (value && window.google && window.google.accounts && window.google.accounts.oauth2) {
-      window.google.accounts.oauth2.revoke(value, () => {});
+    this.rememberConsent(config, false);
+    const g = typeof window !== "undefined" ? window.google : null;
+    if (value && g && g.accounts && g.accounts.oauth2) {
+      g.accounts.oauth2.revoke(value, () => {});
     }
   },
 };

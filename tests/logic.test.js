@@ -343,6 +343,94 @@ test("認証: 有効なトークンがあればそれを返す", async () => {
   GoogleAuth.token = null;
 });
 
+// ---- 同意画面を毎回出さない（2026-07-27） ----
+// 以前は「メモリにトークンがあるか」で初回判定していたため、リロードするたび
+// 初回扱いになり、開くたびにフル同意画面が出ていた。
+
+// prompt に何が渡ったかを記録する、偽のトークンクライアント。
+function fakeTokenClient(outcome = "ok") {
+  const client = {
+    prompts: [],
+    requestAccessToken(options) {
+      client.prompts.push(options.prompt);
+      setTimeout(() => {
+        if (outcome === "ok") client.callback({ access_token: "ya29-secret-token", expires_in: 3600 });
+        else client.callback({ error: outcome });
+      }, 0);
+    },
+  };
+  return client;
+}
+
+function withAuth(outcome, fn) {
+  const client = fakeTokenClient(outcome);
+  GoogleAuth.token = null;
+  GoogleAuth.tokenClient = client;
+  sandbox.localStorage.clear();
+  return fn(client).finally(() => {
+    GoogleAuth.token = null;
+    GoogleAuth.tokenClient = null;
+    sandbox.localStorage.clear();
+  });
+}
+
+test("認証: 初回は同意画面を出す", async () => {
+  await withAuth("ok", async (client) => {
+    await GoogleAuth.connect(APP_CONFIG);
+    assert.deepStrictEqual(client.prompts, ["consent"]);
+  });
+});
+
+test("認証: 一度同意すれば、リロード後も同意画面を出さない", async () => {
+  await withAuth("ok", async (client) => {
+    await GoogleAuth.connect(APP_CONFIG);
+    // リロードを模す。メモリ上のトークンは消えるが、覚えは端末に残る。
+    GoogleAuth.token = null;
+    await GoogleAuth.connect(APP_CONFIG);
+    assert.deepStrictEqual(client.prompts, ["consent", ""], "2回目は確認画面を飛ばす");
+  });
+});
+
+test("認証: 同意済みでも許可が切れていたら、覚えを捨てて押し直させる", async () => {
+  const config = APP_CONFIG;
+  await withAuth("interaction_required", async (client) => {
+    GoogleAuth.rememberConsent(config, true);
+    await assert.rejects(() => GoogleAuth.connect(config), /もう一度/);
+    assert.deepStrictEqual(client.prompts, [""], "失敗のあと自動でやり直さない（ポップアップが塞がれる）");
+    assert.strictEqual(GoogleAuth.hasConsented(config), false, "覚えを捨てて次回は同意画面から");
+  });
+});
+
+test("認証: 接続を切ると覚えも消える", async () => {
+  await withAuth("ok", async () => {
+    await GoogleAuth.connect(APP_CONFIG);
+    assert.strictEqual(GoogleAuth.hasConsented(APP_CONFIG), true);
+    GoogleAuth.disconnect(APP_CONFIG);
+    assert.strictEqual(GoogleAuth.hasConsented(APP_CONFIG), false);
+  });
+});
+
+test("認証: rememberConsent を false にすると毎回同意画面に戻る", async () => {
+  const config = {
+    ...APP_CONFIG,
+    sheets: { ...APP_CONFIG.sheets, oauth: { ...APP_CONFIG.sheets.oauth, rememberConsent: false } },
+  };
+  await withAuth("ok", async (client) => {
+    await GoogleAuth.connect(config);
+    GoogleAuth.token = null;
+    await GoogleAuth.connect(config);
+    assert.deepStrictEqual(client.prompts, ["consent", "consent"]);
+  });
+});
+
+test("認証: アクセストークンは端末に保存しない", async () => {
+  await withAuth("ok", async () => {
+    await GoogleAuth.connect(APP_CONFIG);
+    const saved = [...sandbox.localStorage.map.values()].join(" ");
+    assert.ok(!saved.includes("ya29-secret-token"), "覚えるのは真偽値だけ。トークンは残さない");
+  });
+});
+
 // ================= 状態管理 =================
 
 async function runStoreTests() {
