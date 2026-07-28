@@ -689,8 +689,31 @@ function seedTree(ctx) {
     ctx.app.makeTask({ id: "t2", projectId: "p1", title: "Aの小タスク2" }),
     ctx.app.makeTask({ id: "t3", projectId: "p2", title: "Bの小タスク" }),
   ];
-  click($(ctx.doc, "#btn-group-mode"));
+  click($(ctx.doc, '#filter-group-mode [data-mode="folder"]'));
 }
+
+test("まとめ方: 期限順とフォルダ順が選択肢として並ぶ", async () => {
+  // 1つのボタンで交互に切り替える作りだと、ラベルが現在の状態か
+  // 押した結果かが読み取れず、切り替えられることに気づけなかった。
+  const ctx = boot();
+  await settle();
+  const btns = $$(ctx.doc, "#filter-group-mode [data-mode]");
+  assert.deepStrictEqual(btns.map((b) => b.textContent), ["期限順", "フォルダ順"]);
+  assert.strictEqual(btns[0].getAttribute("aria-pressed"), "true", "既定は期限順");
+
+  click(btns[1]);
+  assert.strictEqual(btns[1].getAttribute("aria-pressed"), "true");
+  assert.strictEqual(btns[0].getAttribute("aria-pressed"), "false");
+});
+
+test("ツリー: 大タスクが未同期なら理由を出す", async () => {
+  const ctx = boot();
+  await settle();
+  ctx.app.state.projects = [];
+  ctx.app.state.tasks = [ctx.app.makeTask({ id: "t1", title: "所属なしのタスク" })];
+  click($(ctx.doc, '#filter-group-mode [data-mode="folder"]'));
+  assert.match(text(ctx.doc, "#task-list"), /同期を実行してください/);
+});
 
 test("ツリー: 分類フォルダごとに分かれ、大タスクは畳まれている", async () => {
   const ctx = boot();
@@ -733,6 +756,42 @@ test("ツリー: 開閉が端末に残り、再描画しても保たれる", asy
 
   const saved = JSON.parse(shared.get("aiTodo.openGroups"));
   assert.ok(saved.includes("project:p1"), "開いた大タスクを覚える");
+});
+
+test("ツリー: AI提案もフォルダ分けされ、確定タスクと開閉が独立している", async () => {
+  const ctx = boot();
+  await settle();
+  ctx.app.state.projects = [
+    ctx.app.makeProject({ id: "p1", name: "大タスクA", category: "E-趣味",
+      source: "タスク/E-趣味/大タスクA/_概要.md" }),
+  ];
+  ctx.app.state.tasks = [
+    ctx.app.makeTask({ id: "t1", projectId: "p1", title: "確定のタスク" }),
+    ctx.app.makeTask({ id: "t2", projectId: "p1", title: "提案のタスク",
+      confirmation: "proposed", aiGenerated: true }),
+  ];
+  click($(ctx.doc, '#filter-group-mode [data-mode="folder"]'));
+
+  const proposalFolders = $$(ctx.doc, "#proposal-list .folder-group");
+  assert.strictEqual(proposalFolders.length, 1, "提案もフォルダに分かれる");
+  assert.strictEqual(proposalFolders[0].querySelector("h2").textContent, "E-趣味");
+  assert.ok(!proposalFolders[0].open, "提案は数が多いので既定で畳む");
+  assert.ok($(ctx.doc, "#task-list .folder-group").open, "確定タスク側は既定で開く");
+
+  assert.match(text(ctx.doc, "#proposal-list"), /採用/, "提案の操作は採用のまま");
+  assert.match(text(ctx.doc, "#task-list"), /完了/, "確定タスクの操作は完了のまま");
+  assert.ok(!text(ctx.doc, "#task-list").includes("提案のタスク"), "確定側に混ざらない");
+});
+
+test("ツリー: 期限順に戻すと提案は平たい一覧に戻る", async () => {
+  const ctx = boot();
+  await settle();
+  ctx.app.state.tasks = [
+    ctx.app.makeTask({ id: "t2", title: "提案のタスク", confirmation: "proposed", aiGenerated: true }),
+  ];
+  click($(ctx.doc, '#filter-group-mode [data-mode="deadline"]'));
+  assert.strictEqual($$(ctx.doc, "#proposal-list .folder-group").length, 0);
+  assert.match(text(ctx.doc, "#proposal-list"), /提案のタスク/);
 });
 
 // ---- 安全性 ----

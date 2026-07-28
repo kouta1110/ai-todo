@@ -261,22 +261,40 @@ function renderList() {
       el("p", "empty", store.tasks.length === 0 ? "タスクがありません。" : "この条件に合うタスクはありません。")
     );
   } else if (groupMode === "folder") {
-    renderFolderGroups(container, sorted);
+    renderFolderGroups(container, sorted, {
+      action: { label: "完了", onClick: (t) => changeStatus(t.id, "done") },
+    });
   } else {
     renderDeadlineGroups(container, sorted);
   }
 
-  // AI提案は別枠（要件4.3）
+  // AI提案は別枠（要件4.3）。まとめ方は確定タスクと揃える。
   const proposals = filterTasks(store.tasks, { open: true, confirmation: "proposed" });
   const box = $("#proposals");
   const list = $("#proposal-list");
   list.innerHTML = "";
   box.classList.toggle("hidden", proposals.length === 0);
-  sortTasks(proposals, { noDeadlinePosition: APP_CONFIG.display.noDeadlinePosition }).forEach((task) =>
-    list.appendChild(
-      buildTaskRow(task, { action: { label: "採用", onClick: (t) => acceptProposal(t.id) } })
-    )
-  );
+
+  const sortedProposals = sortTasks(proposals, {
+    noDeadlinePosition: APP_CONFIG.display.noDeadlinePosition,
+  });
+  if (groupMode === "folder") {
+    renderFolderGroups(list, sortedProposals, {
+      action: { label: "採用", onClick: (t) => acceptProposal(t.id) },
+      // 確定タスクと同じキーだと開閉が連動してしまうので前置きで分ける
+      keyPrefix: "proposal:",
+      // 提案は数が多い。既定で開くと一覧が埋まるので、分類ごと畳んでおく。
+      openByDefault: false,
+      // 未同期の案内は確定タスク側で出るので、ここでは繰り返さない
+      hintOnUnclassified: false,
+    });
+  } else {
+    sortedProposals.forEach((task) =>
+      list.appendChild(
+        buildTaskRow(task, { action: { label: "採用", onClick: (t) => acceptProposal(t.id) } })
+      )
+    );
+  }
 }
 
 // 期限順（従来の表示）
@@ -319,11 +337,16 @@ function saveDisclosure(open) {
 }
 
 let openGroups = null;
+// 既定の開閉をどのキーに適用済みか。確定タスクと提案で別々に一度だけ効かせる。
+const defaultsApplied = new Set();
 
 // 既定は「分類フォルダは開く・大タスクは畳む」。
 // 全部開くと一覧が長くなりすぎ、全部畳むと毎回2回開く必要がある。
-function defaultOpen(folders) {
-  return new Set(folders.map((f) => `folder:${f.key}`));
+function applyDefaults(folders, prefix, openByDefault) {
+  if (defaultsApplied.has(prefix)) return;
+  defaultsApplied.add(prefix);
+  if (!openByDefault) return;
+  folders.forEach((f) => openGroups.add(`${prefix}folder:${f.key}`));
 }
 
 function isOpenGroup(key) {
@@ -355,7 +378,9 @@ function disclosure(key, className, buildSummary, buildBody) {
 
 // 分類フォルダ → 大タスク → 小タスク の3階層。
 // Obsidianのフォルダ構造をそのまま辿れるようにして、どの活動の話かを見失わないようにする。
-function renderFolderGroups(container, sorted) {
+function renderFolderGroups(container, sorted, options = {}) {
+  const action = options.action || { label: "完了", onClick: (t) => changeStatus(t.id, "done") };
+  const prefix = options.keyPrefix || "";
   const folders = buildFolderTree(sorted, store.projects);
 
   if (folders.length === 0) {
@@ -363,11 +388,22 @@ function renderFolderGroups(container, sorted) {
     return;
   }
 
-  if (openGroups === null) openGroups = loadDisclosure() || defaultOpen(folders);
+  if (openGroups === null) openGroups = loadDisclosure() || new Set();
+  applyDefaults(folders, prefix, options.openByDefault !== false);
+
+  // 全部が「所属不明」に入るのは、たいてい大タスク側が未同期のとき。
+  // 「フォルダ分けが効いていない」ように見えるので、理由を出しておく。
+  if (options.hintOnUnclassified !== false && folders.length === 1 && folders[0].key === "所属不明") {
+    const hint = el("p", "empty");
+    hint.textContent = store.projects.length === 0
+      ? "大タスク（Projectsシート）が空のため、分類できませんでした。Obsidianからの同期を実行してください。"
+      : "小タスクに project_id が入っていないため、分類できませんでした。Obsidianからの同期を実行してください。";
+    container.appendChild(hint);
+  }
 
   folders.forEach((folder) => {
     const section = disclosure(
-      `folder:${folder.key}`,
+      `${prefix}folder:${folder.key}`,
       "folder-group",
       (head) => {
         head.appendChild(el("span", "caret"));
@@ -376,7 +412,7 @@ function renderFolderGroups(container, sorted) {
       },
       (body) => {
         folder.projects.forEach((group) => {
-          const key = `project:${group.project.id}`;
+          const key = `${prefix}project:${group.project.id}`;
           const progress = group.project.progress;
           const pct = progress != null && !Number.isNaN(progress) ? Math.round(progress * 100) : null;
 
@@ -413,11 +449,7 @@ function renderFolderGroups(container, sorted) {
                 if (group.project.nextAction) {
                   body2.appendChild(el("p", "project-next", `次の一手: ${group.project.nextAction}`));
                 }
-                group.tasks.forEach((task) =>
-                  body2.appendChild(
-                    buildTaskRow(task, { action: { label: "完了", onClick: (t) => changeStatus(t.id, "done") } })
-                  )
-                );
+                group.tasks.forEach((task) => body2.appendChild(buildTaskRow(task, { action })));
               }
             )
           );
@@ -594,19 +626,29 @@ function setupFilters() {
   build($("#filter-priority"), APP_CONFIG.priorities, "priority");
   build($("#filter-weight"), APP_CONFIG.efforts, "effort");
 
-  // 期限順 / フォルダ順の切り替え
-  const toggle = $("#btn-group-mode");
-  if (toggle) {
-    const sync = () => {
-      toggle.textContent = groupMode === "folder" ? "フォルダ順" : "期限順";
-      toggle.setAttribute("aria-pressed", String(groupMode === "folder"));
-    };
-    toggle.addEventListener("click", () => {
-      groupMode = groupMode === "folder" ? "deadline" : "folder";
-      sync();
-      render();
+  // 期限順 / フォルダ順の切り替え。
+  // 1つのボタンで交互に切り替える形にしていたが、ラベルが現在の状態を指すのか
+  // 押した結果を指すのか読み取れなかったため、選択肢を並べる形にした。
+  const modes = $("#filter-group-mode");
+  if (modes) {
+    modes.innerHTML = "";
+    [
+      { key: "deadline", label: "期限順" },
+      { key: "folder", label: "フォルダ順" },
+    ].forEach((m) => {
+      const btn = el("button", "filter", m.label);
+      btn.type = "button";
+      btn.dataset.mode = m.key;
+      btn.setAttribute("aria-pressed", String(groupMode === m.key));
+      btn.addEventListener("click", () => {
+        groupMode = m.key;
+        modes.querySelectorAll("[data-mode]").forEach((b) => {
+          b.setAttribute("aria-pressed", String(b.dataset.mode === groupMode));
+        });
+        render();
+      });
+      modes.appendChild(btn);
     });
-    sync();
   }
 
   document.querySelectorAll("[data-flag]").forEach((btn) => {
