@@ -287,56 +287,77 @@ h1 {
 .date-head .count { font-size: 0.7rem; color: var(--ink-3); }
 .date-group[data-kind="overdue"] .date-head h2 { color: var(--accent); }
 
-/* ---- 分類フォルダ表示 ---- */
+/* ---- 分類フォルダ表示（ツリー） ---- */
 
 .folder-group { margin-top: var(--gap-5); }
 .folder-group:first-child { margin-top: var(--gap-4); }
 
-.folder-head {
+/* 素の三角マーカーは環境ごとに見た目が違うので消し、自前の caret を出す */
+.folder-group > summary,
+.project-group > summary { list-style: none; cursor: pointer; }
+.folder-group > summary::-webkit-details-marker,
+.project-group > summary::-webkit-details-marker { display: none; }
+
+.caret {
+  flex: none;
+  width: 0.75em;
+  color: var(--ink-3);
+  transition: transform 140ms ease;
+}
+.caret::before { content: "▸"; font-size: 0.7rem; }
+details[open] > summary > .caret { transform: rotate(90deg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .caret { transition: none; }
+}
+
+.folder-group > summary {
   display: flex;
   align-items: baseline;
   gap: var(--gap-2);
-  width: 100%;
-  padding: 0 0 var(--gap);
-  background: none;
-  border: 0;
+  padding-bottom: var(--gap);
   border-bottom: 1px solid var(--rule-strong);
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
 }
-.folder-head h2 {
+.folder-group > summary h2 {
   margin: 0;
   font-size: 0.8rem;
   font-weight: 700;
   letter-spacing: 0.1em;
 }
-.folder-head .count { margin-left: auto; font-size: 0.7rem; color: var(--ink-3); }
-.folder-caret { font-size: 0.7rem; color: var(--ink-3); }
-.folder-head:hover h2 { color: var(--accent); }
-.folder-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.folder-group > summary .count { margin-left: auto; font-size: 0.7rem; color: var(--ink-3); }
+.folder-group > summary:hover h2 { color: var(--accent); }
+.folder-group > summary:focus-visible,
+.project-group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .project-group { margin: var(--gap-3) 0 0 var(--gap-3); }
 
-.project-head {
+.project-group > summary {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: var(--gap);
-  padding-bottom: var(--gap);
+  padding: var(--gap) 0;
 }
-.project-head h3 { margin: 0; font-size: 0.85rem; font-weight: 600; }
+.project-group > summary:hover h3 { color: var(--accent); }
+.project-label { flex: 1 1 auto; min-width: 0; }
+.project-label h3 { margin: 0; font-size: 0.85rem; font-weight: 600; }
 .project-path {
-  flex-basis: 100%;
+  display: block;
   font-size: 0.65rem;
   color: var(--ink-3);
   letter-spacing: 0.06em;
 }
+.project-group > summary .count { flex: none; font-size: 0.7rem; color: var(--ink-3); }
+.project-group > summary .count.pct { min-width: 2.6em; text-align: right; }
+.project-group > summary .tag { flex: none; }
+
 .project-next {
   margin: 0 0 var(--gap-2);
   font-size: 0.72rem;
   color: var(--ink-3);
 }
+
+/* 小タスクは大タスクより一段下げて、階層が目で追えるようにする */
+.project-group > .disclosure-body { padding-left: var(--gap-3); }
 
 .progress {
   flex: 1 1 80px;

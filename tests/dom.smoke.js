@@ -64,7 +64,7 @@ function boot(store = new Map(), options = {}) {
       get state() { return store; },
       get filters() { return filters; },
       get auth() { return GoogleAuth; },
-      showView, openDetail, render, makeTask, isDirty, save, load, getTask,
+      showView, openDetail, render, makeTask, makeProject, isDirty, save, load, getTask,
     };`;
   window.eval(source);
   return { window, doc: window.document, store, app: window.__app };
@@ -673,6 +673,66 @@ test("接続: 失敗しても未保存の変更を捨てない（受け入れ条
 
   assert.strictEqual($(ctx.doc, "#sync-state").dataset.state, "error");
   assert.match(text(ctx.doc, "#task-list"), /失敗しても残るタスク/);
+});
+
+// ---- フォルダ表示（ツリー） ----
+
+function seedTree(ctx) {
+  ctx.app.state.projects = [
+    ctx.app.makeProject({ id: "p1", name: "大タスクA", category: "E-趣味",
+      source: "タスク/E-趣味/AIToDoアプリ/大タスクA/_概要.md", progress: 0.5, status: "進行中" }),
+    ctx.app.makeProject({ id: "p2", name: "大タスクB", category: "A-就活",
+      source: "タスク/A-就活/大タスクB/_概要.md" }),
+  ];
+  ctx.app.state.tasks = [
+    ctx.app.makeTask({ id: "t1", projectId: "p1", title: "Aの小タスク" }),
+    ctx.app.makeTask({ id: "t2", projectId: "p1", title: "Aの小タスク2" }),
+    ctx.app.makeTask({ id: "t3", projectId: "p2", title: "Bの小タスク" }),
+  ];
+  click($(ctx.doc, "#btn-group-mode"));
+}
+
+test("ツリー: 分類フォルダごとに分かれ、大タスクは畳まれている", async () => {
+  const ctx = boot();
+  await settle();
+  seedTree(ctx);
+
+  const folders = $$(ctx.doc, "#task-list .folder-group");
+  assert.deepStrictEqual(folders.map((f) => f.querySelector("h2").textContent), ["E-趣味", "A-就活"]);
+  assert.ok(folders.every((f) => f.open), "分類フォルダは既定で開く");
+
+  const projects = $$(ctx.doc, "#task-list .project-group");
+  assert.strictEqual(projects.length, 2);
+  assert.ok(projects.every((g) => !g.open), "大タスクは既定で畳む");
+});
+
+test("ツリー: 畳んだままでも件数と進捗が見える", async () => {
+  const ctx = boot();
+  await settle();
+  seedTree(ctx);
+
+  const first = $(ctx.doc, "#task-list .project-group");
+  const summary = first.querySelector("summary").textContent;
+  assert.match(summary, /2件/, "小タスクの件数");
+  assert.match(summary, /50%/, "進捗");
+  assert.match(summary, /進行中/, "状態");
+  assert.match(first.querySelector(".project-path").textContent, /AIToDoアプリ/, "中間フォルダをパンくずで出す");
+});
+
+test("ツリー: 開閉が端末に残り、再描画しても保たれる", async () => {
+  const shared = new Map();
+  const ctx = boot(shared);
+  await settle();
+  seedTree(ctx);
+
+  const g = $(ctx.doc, "#task-list .project-group");
+  g.open = true;
+  g.dispatchEvent(new ctx.window.Event("toggle"));
+  ctx.app.render();
+  assert.ok($(ctx.doc, "#task-list .project-group").open, "再描画しても開いたまま");
+
+  const saved = JSON.parse(shared.get("aiTodo.openGroups"));
+  assert.ok(saved.includes("project:p1"), "開いた大タスクを覚える");
 });
 
 // ---- 安全性 ----

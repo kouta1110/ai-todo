@@ -7,8 +7,6 @@ const filters = {};
 
 // 一覧のまとめ方。"deadline" は期限順（従来）、"folder" は分類フォルダ順。
 let groupMode = "deadline";
-// 畳んでいる分類フォルダ。開閉は画面の状態なので保存しない。
-const collapsedFolders = new Set();
 
 // ---- 小さな道具 ----
 
@@ -299,6 +297,62 @@ function renderDeadlineGroups(container, sorted) {
   });
 }
 
+// 開閉状態は端末に覚えておく。畳んだ場所が毎回開き直ると、
+// 分類の多い人ほど毎回同じ操作を繰り返すことになる。
+const DISCLOSURE_KEY = "aiTodo.openGroups";
+
+function loadDisclosure() {
+  try {
+    const raw = localStorage.getItem(DISCLOSURE_KEY);
+    return raw ? new Set(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveDisclosure(open) {
+  try {
+    localStorage.setItem(DISCLOSURE_KEY, JSON.stringify([...open]));
+  } catch {
+    // 保存できなくても表示は続ける（プライベートモードなど）
+  }
+}
+
+let openGroups = null;
+
+// 既定は「分類フォルダは開く・大タスクは畳む」。
+// 全部開くと一覧が長くなりすぎ、全部畳むと毎回2回開く必要がある。
+function defaultOpen(folders) {
+  return new Set(folders.map((f) => `folder:${f.key}`));
+}
+
+function isOpenGroup(key) {
+  return openGroups.has(key);
+}
+
+function toggleGroup(key, open) {
+  if (open) openGroups.add(key);
+  else openGroups.delete(key);
+  saveDisclosure(openGroups);
+}
+
+// 開閉できる見出しを作る。<details>/<summary> は素で開閉と
+// キーボード操作を持っているので、自前で状態を持たない。
+function disclosure(key, className, buildSummary, buildBody) {
+  const box = el("details", className);
+  box.open = isOpenGroup(key);
+  const head = el("summary");
+  buildSummary(head);
+  box.appendChild(head);
+
+  const body = el("div", "disclosure-body");
+  buildBody(body);
+  box.appendChild(body);
+
+  box.addEventListener("toggle", () => toggleGroup(key, box.open));
+  return box;
+}
+
 // 分類フォルダ → 大タスク → 小タスク の3階層。
 // Obsidianのフォルダ構造をそのまま辿れるようにして、どの活動の話かを見失わないようにする。
 function renderFolderGroups(container, sorted) {
@@ -309,61 +363,68 @@ function renderFolderGroups(container, sorted) {
     return;
   }
 
+  if (openGroups === null) openGroups = loadDisclosure() || defaultOpen(folders);
+
   folders.forEach((folder) => {
-    const section = el("section", "folder-group");
+    const section = disclosure(
+      `folder:${folder.key}`,
+      "folder-group",
+      (head) => {
+        head.appendChild(el("span", "caret"));
+        head.appendChild(el("h2", null, folder.label));
+        head.appendChild(el("span", "count", `${folder.openCount}件`));
+      },
+      (body) => {
+        folder.projects.forEach((group) => {
+          const key = `project:${group.project.id}`;
+          const progress = group.project.progress;
+          const pct = progress != null && !Number.isNaN(progress) ? Math.round(progress * 100) : null;
+
+          body.appendChild(
+            disclosure(
+              key,
+              "project-group",
+              (head) => {
+                head.appendChild(el("span", "caret"));
+
+                const label = el("span", "project-label");
+                // 中間フォルダ（AIToDoアプリ など）はパンくずで出す
+                if (group.path.length > 0) {
+                  label.appendChild(el("span", "project-path", group.path.join(" / ")));
+                }
+                label.appendChild(el("h3", null, group.project.name || group.project.id));
+                head.appendChild(label);
+
+                // 畳んだままでも状況が分かるように、件数と進捗は見出しに出す
+                head.appendChild(el("span", "count", `${group.tasks.length}件`));
+                if (pct != null) {
+                  const bar = el("div", "progress");
+                  bar.setAttribute("role", "img");
+                  bar.setAttribute("aria-label", `進捗 ${pct}パーセント`);
+                  const fill = el("div", "progress-fill");
+                  fill.style.width = `${pct}%`;
+                  bar.appendChild(fill);
+                  head.appendChild(bar);
+                  head.appendChild(el("span", "count pct", `${pct}%`));
+                }
+                if (group.project.status) head.appendChild(el("span", "tag", group.project.status));
+              },
+              (body2) => {
+                if (group.project.nextAction) {
+                  body2.appendChild(el("p", "project-next", `次の一手: ${group.project.nextAction}`));
+                }
+                group.tasks.forEach((task) =>
+                  body2.appendChild(
+                    buildTaskRow(task, { action: { label: "完了", onClick: (t) => changeStatus(t.id, "done") } })
+                  )
+                );
+              }
+            )
+          );
+        });
+      }
+    );
     section.dataset.folder = folder.key;
-
-    const head = el("button", "folder-head");
-    head.type = "button";
-    head.setAttribute("aria-expanded", String(!collapsedFolders.has(folder.key)));
-    head.appendChild(el("span", "folder-caret", collapsedFolders.has(folder.key) ? "▸" : "▾"));
-    head.appendChild(el("h2", null, folder.label));
-    head.appendChild(el("span", "count", `${folder.openCount}件`));
-    head.addEventListener("click", () => {
-      if (collapsedFolders.has(folder.key)) collapsedFolders.delete(folder.key);
-      else collapsedFolders.add(folder.key);
-      render();
-    });
-    section.appendChild(head);
-
-    if (!collapsedFolders.has(folder.key)) {
-      folder.projects.forEach((group) => {
-        const box = el("div", "project-group");
-        const ph = el("div", "project-head");
-
-        // 中間フォルダ（趣味/新規事業立案/… の途中）はパンくずで出す
-        if (group.path.length > 0) {
-          ph.appendChild(el("span", "project-path", group.path.join(" / ")));
-        }
-        ph.appendChild(el("h3", null, group.project.name || group.project.id));
-
-        const progress = group.project.progress;
-        if (progress != null && !Number.isNaN(progress)) {
-          const pct = Math.round(progress * 100);
-          const bar = el("div", "progress");
-          bar.setAttribute("role", "img");
-          bar.setAttribute("aria-label", `進捗 ${pct}パーセント`);
-          const fill = el("div", "progress-fill");
-          fill.style.width = `${pct}%`;
-          bar.appendChild(fill);
-          ph.appendChild(bar);
-          ph.appendChild(el("span", "count", `${pct}%`));
-        }
-        if (group.project.status) ph.appendChild(el("span", "tag", group.project.status));
-        box.appendChild(ph);
-
-        if (group.project.nextAction) {
-          box.appendChild(el("p", "project-next", `次の一手: ${group.project.nextAction}`));
-        }
-
-        group.tasks.forEach((task) =>
-          box.appendChild(
-            buildTaskRow(task, { action: { label: "完了", onClick: (t) => changeStatus(t.id, "done") } })
-          )
-        );
-        section.appendChild(box);
-      });
-    }
     container.appendChild(section);
   });
 }
